@@ -377,7 +377,7 @@ foreign import ccall "nfsc/libnfs.h &nfs_closedir"
 closeDir :: Dir -> IO ()
 closeDir = reset_foreign_ptr
 
-type OpenDirCallback = Either String Dir -> IO ()
+type OpenDirCallback = Callback Dir
 
 {# fun nfs_opendir_async as opendir_async { withForeignPtr* `Context'
                                           , withCString* `FilePath'
@@ -388,16 +388,11 @@ openDirAsync :: Context ->
                 FilePath ->
                 OpenDirCallback ->
                 IO (Either String ())
-openDirAsync ctx path cb = do
-  ccb <- wrap_cb =<< opendir_callback_to_c cb
-  handle_ret_error ctx =<< opendir_async ctx path ccb nullPtr
+openDirAsync ctx path cb =
+  wrap_action ctx (opendir_async ctx path) cb $ extract_dir ctx
     where
-      opendir_callback_to_c :: OpenDirCallback -> IO CCallback
-      opendir_callback_to_c cb' = return $ \err _ ptr _ ->
-        handle_cb_error err ptr (get_dir ctx) >>= cb'
-
-      get_dir :: Context -> CInt -> Ptr () -> IO Dir
-      get_dir ctx' _ ptr = withForeignPtr ctx $ \cctx ->
+      extract_dir :: Context -> DataExtractor Dir
+      extract_dir ctx' _ ptr = withForeignPtr ctx' $ \cctx ->
         newForeignPtrEnv close_dir cctx $ castPtr ptr
 
 -- These ones are only available in linux/nfs3.h which isn't exactly portable.
@@ -519,9 +514,8 @@ extract_maybe_dirent ptr
 type MkDirCallback = NoDataCallback
 
 mkDirAsync :: Context -> FilePath -> MkDirCallback -> IO (Either String ())
-mkDirAsync ctx path cb = do
-  ccb <- wrap_cb =<< no_data_callback_to_c cb
-  handle_ret_error ctx =<< mkdir_async ctx path ccb nullPtr
+mkDirAsync ctx path cb =
+  wrap_action ctx (mkdir_async ctx path) cb extract_nothing
 
 {# fun nfs_rmdir_async as rmdir_async { withForeignPtr* `Context'
                                       , withCString* `FilePath'
@@ -531,26 +525,24 @@ mkDirAsync ctx path cb = do
 type RmDirCallback = NoDataCallback
 
 rmDirAsync :: Context -> FilePath -> RmDirCallback -> IO (Either String ())
-rmDirAsync ctx path cb = do
-  ccb <- wrap_cb =<< no_data_callback_to_c cb
-  handle_ret_error ctx =<< rmdir_async ctx path ccb nullPtr
+rmDirAsync ctx path cb =
+  wrap_action ctx (rmdir_async ctx path) cb extract_nothing
 
 type TruncateCallback = NoDataCallback
 
 {#fun nfs_truncate_async as truncate_async { withForeignPtr* `Context'
                                            , withCString* `FilePath'
-                                           , fromIntegral `Word64'
+                                           , fromIntegral `FileOffset'
                                            , id `FunPtr CCallback'
                                            , id `Ptr ()'} -> `Integer' fromIntegral #}
 
 truncateAsync :: Context ->
                  FilePath ->
-                 Word64 ->
+                 FileOffset ->
                  TruncateCallback ->
                  IO (Either String ())
-truncateAsync ctx path len cb = do
-  ccb <- wrap_cb =<< no_data_callback_to_c cb
-  handle_ret_error ctx =<< truncate_async ctx path len ccb nullPtr
+truncateAsync ctx path len cb =
+  wrap_action ctx (truncate_async ctx path len) cb extract_nothing
 
 type RenameCallback = NoDataCallback
 
@@ -565,9 +557,8 @@ renameAsync :: Context ->
                FilePath ->
                RenameCallback ->
                IO (Either String ())
-renameAsync ctx from to cb = do
-  ccb <- wrap_cb =<< no_data_callback_to_c cb
-  handle_ret_error ctx =<< rename_async ctx from to ccb nullPtr
+renameAsync ctx from to cb =
+  wrap_action ctx (rename_async ctx from to) cb extract_nothing
 
 type SymlinkCallback = NoDataCallback
 
@@ -582,9 +573,8 @@ symlinkAsync :: Context ->
                 FilePath ->
                 SymlinkCallback ->
                 IO (Either String ())
-symlinkAsync ctx from to cb = do
-  ccb <- wrap_cb =<< no_data_callback_to_c cb
-  handle_ret_error ctx =<< symlink_async ctx from to ccb nullPtr
+symlinkAsync ctx from to cb =
+  wrap_action ctx (symlink_async ctx from to) cb extract_nothing
 
 type LinkCallback = NoDataCallback
 
@@ -599,9 +589,8 @@ linkAsync :: Context ->
              FilePath ->
              LinkCallback ->
              IO (Either String ())
-linkAsync ctx from to cb = do
-  ccb <- wrap_cb =<< no_data_callback_to_c cb
-  handle_ret_error ctx =<< link_async ctx from to ccb nullPtr
+linkAsync ctx from to cb =
+  wrap_action ctx (link_async ctx from to) cb extract_nothing
 
 {# pointer* nfsfh as Fh foreign #}
 
@@ -616,15 +605,11 @@ foreign import ccall "&nfs_close"
 closeFh :: Fh -> IO ()
 closeFh = reset_foreign_ptr
 
-type OpenFileCallback = Either String Fh -> IO ()
+type OpenFileCallback = Callback Fh
 
-open_file_callback_to_c :: Context -> OpenFileCallback -> IO CCallback
-open_file_callback_to_c ctx cb = return $ \err _ ptr _ ->
-  handle_cb_error err ptr (get_fh ctx) >>= cb
-  where
-    get_fh :: Context -> CInt -> Ptr () -> IO Fh
-    get_fh ctx' _ ptr = withForeignPtr ctx' $ \cctx ->
-      newForeignPtrEnv close_fh cctx $ castPtr ptr
+extract_fh :: Context -> DataExtractor Fh
+extract_fh ctx _ ptr = withForeignPtr ctx $ \cctx ->
+  newForeignPtrEnv close_fh cctx $ castPtr ptr
 
 open_mode_to_cint :: OpenMode -> CInt
 open_mode_to_cint ReadOnly = 0
@@ -642,9 +627,8 @@ creatAsync :: Context ->
               OpenMode ->
               OpenFileCallback ->
               IO (Either String ())
-creatAsync ctx path mode cb = do
-  ccb <- wrap_cb =<< open_file_callback_to_c ctx cb
-  handle_ret_error ctx =<< creat_async ctx path mode ccb nullPtr
+creatAsync ctx path mode cb =
+  wrap_action ctx (creat_async ctx path mode) cb $ extract_fh ctx
 
 {# fun nfs_open_async as open_async { withForeignPtr* `Context'
                                     , withCString* `FilePath'
@@ -657,18 +641,13 @@ openAsync :: Context ->
              OpenMode ->
              OpenFileCallback ->
              IO (Either String ())
-openAsync ctx path mode cb = do
-  ccb <- wrap_cb =<< open_file_callback_to_c ctx cb
-  handle_ret_error ctx =<< open_async ctx path mode ccb nullPtr
+openAsync ctx path mode cb =
+  wrap_action ctx (open_async ctx path mode) cb $ extract_fh ctx
 
-type WriteCallback = Either String Integer -> IO ()
+type WriteCallback = Callback CSize
 
-write_callback_to_c :: WriteCallback -> IO CCallback
-write_callback_to_c cb = return $ \err _ ptr _ ->
-  handle_cb_error err ptr written_size >>= cb
-    where
-      written_size :: CInt -> Ptr () -> IO Integer
-      written_size size _ = return $ fromIntegral size
+extract_write_size :: DataExtractor CSize
+extract_write_size size _ = return $ CSize $ fromIntegral size
 
 -- c2hs won't allow the "BS." prefix. Oh well.
 bs_as_cstring :: BS.ByteString -> (CString -> IO a) -> IO a
@@ -681,15 +660,13 @@ bs_as_cstring = BS.useAsCString
                                       , id `FunPtr CCallback'
                                       , id `Ptr ()' } -> `Integer' fromIntegral #}
 
- -- TODO: use a distinct, unsigned type for data size!?
 writeAsync :: Context ->
               Fh ->
               BS.ByteString ->
               WriteCallback ->
               IO (Either String ())
-writeAsync ctx fh bs cb = do
-  ccb <- wrap_cb =<< write_callback_to_c cb
-  handle_ret_error ctx =<< write_async ctx fh (BS.length bs) bs ccb nullPtr
+writeAsync ctx fh bs cb =
+  wrap_action ctx (write_async ctx fh (BS.length bs) bs) cb extract_write_size
 
 {# fun nfs_pwrite_async as pwrite_async { withForeignPtr* `Context'
                                         , withForeignPtr* `Fh'
@@ -705,9 +682,8 @@ pwriteAsync :: Context ->
                FileOffset ->
                WriteCallback ->
                IO (Either String ())
-pwriteAsync ctx fh bs off cb = do
-  ccb <- wrap_cb =<< write_callback_to_c cb
-  handle_ret_error ctx =<< pwrite_async ctx fh off (BS.length bs) bs ccb nullPtr
+pwriteAsync ctx fh bs off cb =
+  wrap_action ctx (pwrite_async ctx fh off (BS.length bs) bs) cb extract_write_size
 
 {# fun nfs_read_async as read_async { withForeignPtr* `Context'
                                     , withForeignPtr* `Fh'
@@ -715,40 +691,34 @@ pwriteAsync ctx fh bs off cb = do
                                     , id `FunPtr CCallback'
                                     , id `Ptr ()' } -> `Integer' fromIntegral #}
 
-type ReadCallback = Either String BS.ByteString -> IO ()
+type ReadCallback = Callback BS.ByteString
 
-read_callback_to_c :: ReadCallback -> IO CCallback
-read_callback_to_c cb = return $ \ err _ ptr _ ->
-  handle_cb_error err ptr read_data >>= cb
-    where
-      read_data :: CInt -> Ptr () -> IO BS.ByteString
-      read_data len ptr = BS.packCStringLen (castPtr ptr, fromIntegral len)
+extract_read_data :: DataExtractor BS.ByteString
+extract_read_data len ptr = BS.packCStringLen (castPtr ptr, fromIntegral len)
 
 readAsync :: Context ->
              Fh ->
              Word64 ->
              ReadCallback ->
              IO (Either String ())
-readAsync ctx fh size cb = do
-  ccb <- wrap_cb =<< read_callback_to_c cb
-  handle_ret_error ctx =<< read_async ctx fh size ccb nullPtr
+readAsync ctx fh size cb =
+  wrap_action ctx (read_async ctx fh size) cb extract_read_data
 
 {# fun nfs_pread_async as pread_async { withForeignPtr* `Context'
                                       , withForeignPtr* `Fh'
                                       , fromIntegral `FileOffset'
-                                      , fromIntegral `Word64'
+                                      , fromIntegral `CSize'
                                       , id `FunPtr CCallback'
                                       , id `Ptr ()' } -> `Integer' fromIntegral #}
 
 preadAsync :: Context ->
               Fh ->
-              Word64 ->
+              CSize ->
               FileOffset ->
               ReadCallback ->
               IO (Either String ())
-preadAsync ctx fh size off cb = do
-  ccb <- wrap_cb =<< read_callback_to_c cb
-  handle_ret_error ctx =<< pread_async ctx fh off size ccb nullPtr
+preadAsync ctx fh size off cb =
+  wrap_action ctx (pread_async ctx fh off size) cb extract_read_data
 
 type FSyncCallback = NoDataCallback
 
@@ -761,18 +731,13 @@ fsyncAsync :: Context ->
               Fh ->
               FSyncCallback ->
               IO (Either String ())
-fsyncAsync ctx fh cb = do
-  ccb <- wrap_cb =<< no_data_callback_to_c cb
-  handle_ret_error ctx =<< fsync_async ctx fh ccb nullPtr
+fsyncAsync ctx fh cb =
+  wrap_action ctx (fsync_async ctx fh) cb extract_nothing
 
-type LSeekCallback = Either String FileOffset -> IO ()
+type LSeekCallback = Callback FileOffset
 
-lseek_callback_to_c :: LSeekCallback -> IO CCallback
-lseek_callback_to_c cb = return $ \err _ ptr _ ->
-  handle_cb_error err ptr position >>= cb
-    where
-      position :: CInt -> Ptr () -> IO FileOffset
-      position _ ptr = peek $ castPtr ptr
+extract_file_pos :: DataExtractor FileOffset
+extract_file_pos _ ptr = peek $ castPtr ptr
 
 {#fun nfs_lseek_async as lseek_async { withForeignPtr* `Context'
                                      , withForeignPtr* `Fh'
@@ -787,24 +752,22 @@ lseekAsync :: Context ->
               SeekMode ->
               LSeekCallback ->
               IO (Either String ())
-lseekAsync ctx fh off mode cb = do
-  ccb <- wrap_cb =<< lseek_callback_to_c cb
-  handle_ret_error ctx =<< lseek_async ctx fh off (fromEnum mode) ccb nullPtr
+lseekAsync ctx fh off mode cb =
+  wrap_action ctx (lseek_async ctx fh off $ fromEnum mode) cb extract_file_pos
 
 {# fun nfs_ftruncate_async as ftruncate_async { withForeignPtr* `Context'
                                               , withForeignPtr* `Fh'
-                                              , fromIntegral `Word64'
+                                              , fromIntegral `FileOffset'
                                               , id `FunPtr CCallback'
                                               , id `Ptr ()' } -> `Integer' fromIntegral #}
 
 ftruncateAsync :: Context ->
                   Fh ->
-                  Word64 ->
+                  FileOffset ->
                   TruncateCallback ->
                   IO (Either String ())
-ftruncateAsync ctx fh len cb = do
-  ccb <- wrap_cb =<< no_data_callback_to_c cb
-  handle_ret_error ctx =<< ftruncate_async ctx fh len ccb nullPtr
+ftruncateAsync ctx fh len cb =
+  wrap_action ctx (ftruncate_async ctx fh len) cb extract_nothing
 
 {# fun nfs_get_current_offset as getCurrentOffset { withForeignPtr* `Fh' } -> `FileOffset' fromIntegral #}
 
@@ -823,9 +786,8 @@ chownAsync :: Context ->
               GroupID ->
               ChownCallback ->
               IO (Either String ())
-chownAsync ctx path uid gid cb = do
-  ccb <- wrap_cb =<< no_data_callback_to_c cb
-  handle_ret_error ctx =<< chown_async ctx path uid gid ccb nullPtr
+chownAsync ctx path uid gid cb =
+  wrap_action ctx (chown_async ctx path uid gid) cb extract_nothing
 
 {# fun nfs_fchown_async as fchown_async { withForeignPtr* `Context'
                                         , withForeignPtr* `Fh'
@@ -840,9 +802,8 @@ fchownAsync :: Context ->
                GroupID ->
                ChownCallback ->
                IO (Either String ())
-fchownAsync ctx fh uid gid cb = do
-  ccb <- wrap_cb =<< no_data_callback_to_c cb
-  handle_ret_error ctx =<< fchown_async ctx fh uid gid ccb nullPtr
+fchownAsync ctx fh uid gid cb =
+  wrap_action ctx (fchown_async ctx fh uid gid) cb extract_nothing
 
 type ChmodCallback = NoDataCallback
 
@@ -857,9 +818,8 @@ chmodAsync :: Context ->
               FileMode ->
               ChmodCallback ->
               IO (Either String ())
-chmodAsync ctx path mode cb = do
-  ccb <- wrap_cb =<< no_data_callback_to_c cb
-  handle_ret_error ctx =<< chmod_async ctx path mode ccb nullPtr
+chmodAsync ctx path mode cb =
+  wrap_action ctx (chmod_async ctx path mode) cb extract_nothing
 
 {# fun nfs_fchmod_async as fchmod_async { withForeignPtr* `Context'
                                         , withForeignPtr* `Fh'
@@ -872,9 +832,8 @@ fchmodAsync :: Context ->
                FileMode ->
                ChmodCallback ->
                IO (Either String ())
-fchmodAsync ctx fh mode cb = do
-  ccb <- wrap_cb =<< no_data_callback_to_c cb
-  handle_ret_error ctx =<< fchmod_async ctx fh mode ccb nullPtr
+fchmodAsync ctx fh mode cb =
+  wrap_action ctx (fchmod_async ctx fh mode) cb extract_nothing
 
 type ChdirCallback = NoDataCallback
 
@@ -887,9 +846,8 @@ chdirAsync :: Context ->
               FilePath ->
               ChdirCallback ->
               IO (Either String ())
-chdirAsync ctx path cb = do
-  ccb <- wrap_cb =<< no_data_callback_to_c cb
-  handle_ret_error ctx =<< chdir_async ctx path ccb nullPtr
+chdirAsync ctx path cb =
+  wrap_action ctx (chdir_async ctx path) cb extract_nothing
 
 {# fun nfs_getcwd as get_cwd { withForeignPtr* `Context'
                              , id `Ptr CString' } -> `()' #}
@@ -939,11 +897,13 @@ accessAsync :: Context ->
                AccessMode ->
                AccessCallback ->
                IO (Either String ())
-accessAsync ctx path mode cb = do
-  ccb <- wrap_cb =<< no_data_callback_to_c cb
-  handle_ret_error ctx =<< access_async ctx path mode ccb nullPtr
+accessAsync ctx path mode cb =
+  wrap_action ctx (access_async ctx path mode) cb extract_nothing
 
-type ReadLinkCallback = Either String FilePath -> IO ()
+type ReadLinkCallback = Callback FilePath
+
+extract_file_path :: DataExtractor FilePath
+extract_file_path _ ptr = peekCString $ castPtr ptr
 
 {# fun nfs_readlink_async as readlink_async { withForeignPtr* `Context'
                                             , withCString* `FilePath'
@@ -954,16 +914,8 @@ readlinkAsync :: Context ->
                  FilePath ->
                  ReadLinkCallback ->
                  IO (Either String ())
-readlinkAsync ctx path cb = do
-  ccb <- wrap_cb =<< readlink_callback_to_c cb
-  handle_ret_error ctx =<< readlink_async ctx path ccb nullPtr
-    where
-      readlink_callback_to_c :: ReadLinkCallback -> IO CCallback
-      readlink_callback_to_c cb' = return $ \err _ ptr _ ->
-        handle_cb_error err ptr linktarget >>= cb'
-
-      linktarget :: CInt -> Ptr () -> IO FilePath
-      linktarget _ ptr = peekCString $ castPtr ptr
+readlinkAsync ctx path cb =
+  wrap_action ctx (readlink_async ctx path) cb extract_file_path
 
 #c
 typedef struct statvfs statvfs;
@@ -1005,7 +957,10 @@ instance Storable StatVFS where
   peek = peek_statvfs_ptr
   poke = poke_statvfs_ptr
 
-type StatVFSCallback = Either String StatVFS -> IO ()
+type StatVFSCallback = Callback StatVFS
+
+extract_statvfs :: DataExtractor StatVFS
+extract_statvfs _ ptr = peek $ castPtr ptr
 
 {#fun nfs_statvfs_async as statvfs_async { withForeignPtr* `Context'
                                          , withCString* `FilePath'
@@ -1016,16 +971,8 @@ statvfsAsync :: Context ->
                 FilePath ->
                 StatVFSCallback ->
                 IO (Either String ())
-statvfsAsync ctx path cb = do
-  ccb <- wrap_cb =<< statvfs_callback_to_c cb
-  handle_ret_error ctx =<< statvfs_async ctx path ccb nullPtr
-    where
-      statvfs_callback_to_c :: StatVFSCallback -> IO CCallback
-      statvfs_callback_to_c cb' = return $ \err _ ptr _ ->
-        handle_cb_error err ptr get_statvfs >>= cb'
-
-      get_statvfs :: CInt -> Ptr () -> IO StatVFS
-      get_statvfs _ ptr = peek $ castPtr ptr
+statvfsAsync ctx path cb =
+  wrap_action ctx (statvfs_async ctx path) cb extract_statvfs
 
 type BlockCount = Word64
 type BlockSize = Word64
@@ -1095,14 +1042,10 @@ instance Storable Stat where
   peek = peek_stat_ptr
   poke = poke_stat_ptr
 
-type StatCallback = Either String Stat -> IO ()
+type StatCallback = Callback Stat
 
-stat_callback_to_c :: StatCallback -> IO CCallback
-stat_callback_to_c cb = return $ \err _ ptr _ ->
-  handle_cb_error err ptr get_stat >>= cb
-    where
-      get_stat :: CInt -> Ptr () -> IO Stat
-      get_stat _ ptr = peek $ castPtr ptr
+extract_stat :: DataExtractor Stat
+extract_stat _ ptr = peek $ castPtr ptr
 
 {# fun nfs_stat_async as stat_async { withForeignPtr* `Context'
                                     , withCString* `FilePath'
@@ -1113,11 +1056,10 @@ statAsync :: Context ->
              FilePath ->
              StatCallback ->
              IO (Either String ())
-statAsync ctx path cb = do
-  ccb <- wrap_cb =<< stat_callback_to_c cb
-  handle_ret_error ctx =<< stat_async ctx path ccb nullPtr
+statAsync ctx path cb =
+  wrap_action ctx (stat_async ctx path) cb extract_stat
 
-{# fun nfs_fstat_async as stat_fasync { withForeignPtr* `Context'
+{# fun nfs_fstat_async as fstat_async { withForeignPtr* `Context'
                                       , withForeignPtr* `Fh'
                                       , id `FunPtr CCallback'
                                       , id `Ptr ()' } -> `Integer' fromIntegral #}
@@ -1126,9 +1068,8 @@ fstatAsync :: Context ->
               Fh ->
               StatCallback ->
               IO (Either String ())
-fstatAsync ctx fh cb = do
-  ccb <- wrap_cb =<< stat_callback_to_c cb
-  handle_ret_error ctx =<< stat_fasync ctx fh ccb nullPtr
+fstatAsync ctx fh cb =
+  wrap_action ctx (fstat_async ctx fh) cb extract_stat
 
 data UTimesCallback = NoDataCallback
 
