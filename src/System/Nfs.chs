@@ -131,6 +131,9 @@ import Foreign.Ptr
 import Foreign.Storable
 
 import System.IO (SeekMode)
+
+-- provides TimeSpec, albeit based on Int for both sec and nsec
+import System.Clock
 import System.Posix.IO (OpenMode (..))
 import System.Posix.StatVFS
 import System.Posix.Types
@@ -1016,7 +1019,10 @@ peek_stat_ptr ptr = do
   -- The structure has no member called `st_atime'.  The structure is defined at
   -- ("/usr/include/x86_64-linux-gnu/bits/stat.h",46,1).
 
-  -- atime <- {# get stat->st_atime #} ptr
+  atime <- peek $ ptr `plusPtr` {# offsetof stat->st_atim #}
+  mtime <- peek $ ptr `plusPtr` {# offsetof stat->st_mtim #}
+  ctime <- peek $ ptr `plusPtr` {# offsetof stat->st_ctim #}
+  -- {# get stat->st_atime #} ptr
   -- mime <- {# get stat->st_mtime #} ptr
   -- ctime <- {# get stat->st_ctime #} ptr
   return $ Stat { statDev = fromIntegral dev
@@ -1029,9 +1035,9 @@ peek_stat_ptr ptr = do
                 , statSize = fromIntegral size
                 , statBlkSize = fromIntegral blksize
                 , statBlocks = fromIntegral blocks
-                , statATime = 0
-                , statMTime = 0
-                , statCTime = 0 }
+                , statATime = fromIntegral $ sec atime
+                , statMTime = fromIntegral $ sec mtime
+                , statCTime = fromIntegral $ sec ctime }
 
 poke_stat_ptr :: StatPtr -> Stat -> IO ()
 poke_stat_ptr _ _ = fail "We don't write to a StatPtr. Ever."
