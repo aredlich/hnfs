@@ -12,6 +12,7 @@ module System.Nfs ( AccessCallback
                   , AccessMode
                   , BlockCount
                   , BlockSize
+                  , Callback
                   , ChdirCallback
                   , ChmodCallback
                   , ChownCallback
@@ -36,7 +37,9 @@ module System.Nfs ( AccessCallback
                   , StatCallback
                   , StatVFSCallback
                   , SymlinkCallback
+                  , TimeVal
                   , TruncateCallback
+                  , UTimesCallback
                   , WriteCallback
                   , accessAsync
                   , accessModeExec
@@ -110,6 +113,7 @@ module System.Nfs ( AccessCallback
                   , statvfsAsync
                   , symlinkAsync
                   , truncateAsync
+                  , utimesAsync
                   , whichEvents
                   , writeAsync
                   ) where
@@ -133,7 +137,7 @@ import Foreign.Storable
 import System.IO (SeekMode)
 
 -- provides TimeSpec, albeit based on Int for both sec and nsec
-import System.Clock
+import qualified System.Clock as Clock
 import System.Posix.IO (OpenMode (..))
 import System.Posix.StatVFS
 import System.Posix.Types
@@ -324,15 +328,10 @@ to_callback_ptr cb extractor = wrap_cb =<< to_c_callback cb extractor
     to_c_callback :: Callback a ->
                      DataExtractor a ->
                      IO CCallback
-    to_c_callback cb extractor = return $ \err _ ptr _ ->
-      handle_cb_error err ptr extractor >>= cb
+    to_c_callback cb' extractor' = return $ \err _ ptr _ ->
+      handle_cb_error err ptr extractor' >>= cb'
 
 type NoDataCallback = Callback ()
--- type NoDataCallback = Either String () -> IO ()
-
-no_data_callback_to_c :: NoDataCallback -> IO CCallback
-no_data_callback_to_c cb = return $ \err _ ptr _ ->
-  handle_cb_error err ptr (\_ _ -> return ()) >>= cb
 
 type MountCallback = NoDataCallback
 
@@ -1035,9 +1034,9 @@ peek_stat_ptr ptr = do
                 , statSize = fromIntegral size
                 , statBlkSize = fromIntegral blksize
                 , statBlocks = fromIntegral blocks
-                , statATime = fromIntegral $ sec atime
-                , statMTime = fromIntegral $ sec mtime
-                , statCTime = fromIntegral $ sec ctime }
+                , statATime = fromIntegral $ Clock.sec atime
+                , statMTime = fromIntegral $ Clock.sec mtime
+                , statCTime = fromIntegral $ Clock.sec ctime }
 
 poke_stat_ptr :: StatPtr -> Stat -> IO ()
 poke_stat_ptr _ _ = fail "We don't write to a StatPtr. Ever."
@@ -1077,13 +1076,22 @@ fstatAsync :: Context ->
 fstatAsync ctx fh cb =
   wrap_action ctx (fstat_async ctx fh) cb extract_stat
 
-data UTimesCallback = NoDataCallback
+type UTimesCallback = NoDataCallback
 
 {# fun nfs_utimes_async as utimes_async { withForeignPtr* `Context'
                                         , withCString* `FilePath'
                                         , id `TimeValPtr'
                                         , id `FunPtr CCallback'
                                         , id `Ptr ()' } -> `Integer' fromIntegral #}
+
+utimesAsync :: Context ->
+               FilePath ->
+               TimeVal ->
+               UTimesCallback ->
+               IO (Either String ())
+utimesAsync ctx path tv cb = alloca $ \ptr -> do
+  poke ptr tv
+  wrap_action ctx (utimes_async ctx path ptr) cb extract_nothing
 
 -- Local Variables: **
 -- mode: haskell **
