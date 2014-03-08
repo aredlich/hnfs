@@ -20,6 +20,7 @@ module System.Nfs ( AccessCallback
                   , Dir
                   , Dirent
                   , Event
+                  , ExportName
                   , FType3
                   , FSyncCallback
                   , LinkCallback
@@ -33,6 +34,7 @@ module System.Nfs ( AccessCallback
                   , ReadLinkCallback
                   , RenameCallback
                   , RmDirCallback
+                  , ServerAddress
                   , Stat
                   , StatCallback
                   , StatVFSCallback
