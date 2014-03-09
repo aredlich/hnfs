@@ -55,10 +55,13 @@ module System.Nfs ( AccessCallback
                   , closeFh
                   , creatAsync
                   , destroyContext
+                  , direntATime
+                  , direntCTime
                   , direntFType3
                   , direntGid
                   , direntInode
                   , direntMode
+                  , direntMTime
                   , direntName
                   , direntSize
                   , direntUid
