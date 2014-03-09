@@ -33,4 +33,4 @@ executable hnfs-tester
   hs-source-dirs:	hnfs-tester
   main-is:		Main.hs
   build-depends:	base >=4.5, tasty, tasty-hunit, hnfs, unix, bytestring, statvfs, clock, cmdargs >= 0.10.7
-  ghc-options:	       -Wall
+  ghc-options:	       -Wall -threaded
