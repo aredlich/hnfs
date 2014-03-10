@@ -10,6 +10,8 @@
 module Main where
 
 import Control.Concurrent.MVar
+import Control.Monad.IO.Class
+import Control.Monad.Trans.Either
 
 import Data.IORef
 import Data.Monoid
@@ -35,8 +37,9 @@ ev_to_nfs_event ev
   | ev == Ev.evtWrite = Nfs.eventWrite
   | otherwise = undefined
 
--- We need to constantly re-register the context's fd as libnfs closes / reopens
--- it.
+-- Retrieving and registering the context's fd once is *not* sufficient -
+-- we need to constantly re-register it as libnfs closes / reopens it e.g.
+-- during mount.
 -- TODO: get rid of the IORef
 ev_callback :: Nfs.Context -> Ev.EventManager -> IORef (Maybe Ev.FdKey) -> Ev.FdKey -> Ev.Event -> IO ()
 ev_callback ctx mgr ref fdkey ev = do
@@ -54,28 +57,27 @@ register_fd ctx mgr ref = do
 sync_wrap :: Show a => Nfs.Context ->
              (Nfs.Callback a -> IO (Either String ())) ->
              IO (Either String a)
-sync_wrap ctx async_action = do
-  mmgr <- Ev.getSystemEventManager
-  case mmgr of
-    Nothing -> return $ Left "failed to get system event manager"
-    Just mgr -> do
-      mv <- newEmptyMVar
-      ret <- async_action $ \ret' -> do
-        putMVar mv ret'
-      case ret of
-        Left s -> return $ Left $ "failed to invoke async action: " ++ s
-        Right () -> do
-          ref <- newIORef Nothing
-          register_fd ctx mgr ref
-          ret'' <- takeMVar mv
-          mkey <- readIORef ref
-          case mkey of
-            Nothing -> return $ Left "failed to get fdkey to unregister"
-            Just key -> do
-              Ev.unregisterFd mgr key
-              return ret''
+sync_wrap ctx async_action = runEitherT $ do
+  mmgr <- liftIO Ev.getSystemEventManager
+  mgr <- case mmgr of
+    Nothing -> left "failed to get system event manager"
+    Just m -> right m
+  mv <- liftIO newEmptyMVar
+  ret <- liftIO $ async_action $ \ret' -> do
+    putMVar mv ret'
+  case ret of
+    Left s -> left $ "failed to invoke async action: " ++ s
+    Right () -> right ()
+  ref <- liftIO $ newIORef Nothing
+  liftIO $ register_fd ctx mgr ref
+  ret'' <- liftIO $ takeMVar mv
+  mkey <- liftIO $ readIORef ref
+  key <- case mkey of
+    Nothing -> left "failed to get fdkey to unregister"
+    Just k -> right k
+  liftIO $ Ev.unregisterFd mgr key
+  hoistEither ret''
 
--- TODO: use Either + IO monad transformer stack
 mount_and_list :: Nfs.ServerAddress -> Nfs.ExportName -> FilePath -> IO ()
 mount_and_list srv xprt path = do
   ctx <- Nfs.initContext
