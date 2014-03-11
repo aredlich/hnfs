@@ -10,18 +10,24 @@
 module Main where
 
 import Control.Concurrent.MVar
+import Control.Exception
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Either
 
 import Data.IORef
 import Data.Monoid
+import Data.Typeable (Typeable)
+import Data.Proxy
+import Data.UUID
+import Data.UUID.V4
 
 import qualified GHC.Event as Ev
 
-import qualified System.Console.CmdArgs as CA
 import qualified System.Nfs as Nfs
 
-import qualified Test.Tasty.HUnit as HU
+import Test.Tasty
+import Test.Tasty.Options
+import Test.Tasty.HUnit as HU
 
 nfs_to_ev_event :: Nfs.Event -> Ev.Event
 nfs_to_ev_event ev
@@ -110,37 +116,156 @@ mount_and_list srv xprt path = do
               "}"
             print_entries ctx' dir'
 
-data Args = Args { server :: Nfs.ServerAddress
-                 , export :: Nfs.ExportName
-                 } deriving (CA.Data, CA.Typeable, Show)
+with_mount ::  Nfs.ServerAddress -> Nfs.ExportName -> (Nfs.Context -> IO ()) -> IO ()
+with_mount srv xprt action = do
+  ret <- mount srv xprt
+  case ret of
+    Left s -> HU.assertFailure $ "mounting " ++ srv ++ ":" ++ xprt ++ " failed: " ++ s
+    Right ctx -> action ctx
 
-prog :: String
-prog = "hnfs-tester"
+mount :: Nfs.ServerAddress -> Nfs.ExportName -> IO (Either String Nfs.Context)
+mount srv xprt = runEitherT $ do
+  ctx <- liftIO Nfs.initContext
+  ret <- liftIO $ sync_wrap ctx $ Nfs.mountAsync ctx srv xprt
+  case ret of
+    Left s -> left s
+    Right () -> right ctx
 
-help :: String
-help = "Test program to both exercise and demonstrate the hnfs library"
+test_mount_wrong_server :: TestTree
+test_mount_wrong_server = let assertion = do
+                                uuid <- nextRandom >>= \u -> return $ toString u
+                                ret <- mount uuid uuid
+                                case ret of
+                                  Left s -> return ()
+                                  Right _ -> HU.assertFailure $
+                                             "mounting " ++ uuid ++ ":" ++ uuid ++
+                                             " succeeded unexpectedly"
+                          in
+                           HU.testCase "mount test, wrong server" assertion
 
-version :: String
-version = "0.0.1"
+test_mount_wrong_export :: Nfs.ServerAddress -> TestTree
+test_mount_wrong_export srv = let assertion = do
+                                    uuid <- nextRandom >>= \u -> return $ toString u
+                                    ret <- mount srv uuid
+                                    case ret of
+                                      Left s -> return ()
+                                      Right _ -> HU.assertFailure $
+                                                 "mounting " ++ srv ++ ":" ++ uuid ++
+                                                 " succeeded unexpectedly"
+                              in
+                               HU.testCase "mount test, wrong export" assertion
 
-copyright :: String
-copyright = "Copyright (C) 2014 Arne Redlich <arne.redlich@googlemail.com>"
+test_mount_ok :: Nfs.ServerAddress -> Nfs.ExportName -> TestTree
+test_mount_ok srv xprt = let assertion = do
+                               ret <- mount srv xprt
+                               case ret of
+                                 Left s -> HU.assertFailure $
+                                           "mounting " ++ srv ++ ":" ++ xprt ++
+                                           " failed: " ++ s
+                                 Right _ -> return ()
+                         in
+                          HU.testCase "mount test" assertion
 
-license :: String
-license = "Licensed under the LGPL v2.1. See the LICENSE file for details."
+test_init_context :: TestTree
+test_init_context = let assertion = do
+                          ctx <- Nfs.initContext
+                          err <- Nfs.getError ctx
+                          HU.assertEqual "initContext failed" Nothing err
+                    in
+                     HU.testCase "test initContext" assertion
 
-args :: CA.Mode (CA.CmdArgs Args)
-args = CA.cmdArgsMode $  Args { server = CA.def CA.&= CA.help "NFS server address"
-                              , export = CA.def CA.&= CA.help "NFS export"
-                              }
-       CA.&= CA.help help
-       CA.&= CA.summary (prog ++ ", Version " ++ version ++ "\n\n" ++ copyright ++ "\n" ++ license)
-       CA.&= CA.program prog
+test_destroy_context :: TestTree
+test_destroy_context = let assertion = do
+                             ctx <- Nfs.initContext
+                             Nfs.destroyContext ctx
+                       in HU.testCase "test destroyContext" assertion
+
+test_destroy_context_twice :: TestTree
+test_destroy_context_twice = let assertion = do
+                                   ctx <- Nfs.initContext
+                                   Nfs.destroyContext ctx
+                                   Nfs.destroyContext ctx
+                             in HU.testCase "test destroyContext 2x" assertion
+
+test_get_fd :: TestTree
+test_get_fd = let assertion = do
+                    ctx <- Nfs.initContext
+                    fd <- Nfs.getFd ctx
+                    HU.assertBool "got an fd without mounting" (fd < 0)
+              in
+               HU.testCase "test getFd" assertion
+
+test_get_fd_mounted :: Nfs.ServerAddress -> Nfs.ExportName -> TestTree
+test_get_fd_mounted srv xprt = let assertion =
+                                     with_mount srv xprt $ \ctx -> do
+                                       fd <- Nfs.getFd ctx
+                                       HU.assertBool "didn't get an FD back" $ fd >= 0
+                               in
+                                HU.testCase "test getFd mounted" assertion
+
+test_queue_length :: TestTree
+test_queue_length = let assertion = do
+                          ctx <- Nfs.initContext
+                          l <- Nfs.queueLength ctx
+                          HU.assertEqual "unexpected queue length" 0 l
+                    in
+                     HU.testCase "test queueLength" assertion
+
+test_get_read_max :: TestTree
+test_get_read_max = let assertion = do
+                          ctx <- Nfs.initContext
+                          l <- Nfs.getReadMax ctx
+                          HU.assertEqual "unexpected read max" 0 l
+                    in
+                     HU.testCase "test getReadMax" assertion
+
+test_get_write_max :: TestTree
+test_get_write_max = let assertion = do
+                           ctx <- Nfs.initContext
+                           l <- Nfs.getWriteMax ctx
+                           HU.assertEqual "unexpected write max" 0 l
+                     in
+                      HU.testCase "test getWriteMax" assertion
+
+-- TODO: make this fail with a nicer error message if server / export are not
+-- specified
+newtype ServerAddressOpt = ServerAddressOpt Nfs.ServerAddress
+                           deriving (Eq, Show, Ord, Typeable)
+
+instance IsOption ServerAddressOpt where
+  parseValue s = Just $ ServerAddressOpt s
+  optionName = return "server"
+  optionHelp = return "NFS server to connect to"
+
+newtype ExportNameOpt = ExportNameOpt Nfs.ExportName
+                      deriving (Eq, Show, Ord, Typeable)
+
+instance IsOption ExportNameOpt where
+  parseValue s = Just $ ExportNameOpt s
+  optionName = return "export"
+  optionHelp = return "NFS export to mount"
 
 main :: IO ()
-main = do
-  a <- CA.cmdArgsRun args
-  mount_and_list (server a) (export a) "/"
+main = let ings = includingOptions [ Option (Proxy :: Proxy ServerAddressOpt)
+                                   , Option (Proxy :: Proxy ExportNameOpt)
+                                   ] : defaultIngredients
+       in
+        defaultMainWithIngredients ings $
+        askOption $ \(ServerAddressOpt server) ->
+        askOption $ \(ExportNameOpt export) ->
+        testGroup "Tests" $
+       [ test_init_context
+       , test_destroy_context
+       , test_destroy_context_twice
+       , test_get_fd
+       , test_get_fd_mounted server export
+       , test_queue_length
+       , test_get_read_max
+       , test_get_write_max
+       , test_mount_ok server export
+       , test_mount_wrong_export server
+       , test_mount_wrong_server
+       ]
 
 -- Local Variables: **
 -- mode: haskell **
