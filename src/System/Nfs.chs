@@ -21,7 +21,7 @@ module System.Nfs ( AccessCallback
                   , Dirent
                   , Event
                   , ExportName
-                  , FType3
+                  , FType3 (..)
                   , FSyncCallback
                   , LinkCallback
                   , LSeekCallback
