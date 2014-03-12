@@ -23,7 +23,7 @@ library
   includes:	       nfsc/libnfs.h
   extra-libraries:     nfs
   extra-lib-dirs:      /usr/local/lib
-  ghc-options:	       -Wall
+  ghc-options:	       -Wall -threaded
 
 executable hnfs-tester
   default-language:	Haskell2010

@@ -18,7 +18,7 @@ import Data.IORef
 import Data.Monoid
 import Data.Typeable (Typeable)
 import Data.Proxy
-import Data.UUID
+import Data.UUID hiding (null)
 import Data.UUID.V4
 
 import qualified GHC.Event as Ev
@@ -130,6 +130,8 @@ with_mount srv xprt action = do
 mount :: Nfs.ServerAddress -> Nfs.ExportName -> IO (Either String Nfs.Context)
 mount srv xprt = runEitherT $ do
   ctx <- liftIO Nfs.initContext
+  liftIO $ Nfs.setUid ctx 0
+  liftIO $ Nfs.setGid ctx 0
   ret <- liftIO $ sync_wrap ctx $ Nfs.mountAsync ctx srv xprt
   case ret of
     Left s -> left s
@@ -158,6 +160,43 @@ with_directory ctx parent action = bracket mkdir rmdir action
         Left s -> HU.assertFailure $ "failed to remove path: " ++ s
         Right () -> return ()
 
+list_directory :: Nfs.Context ->
+                  FilePath ->
+                  IO (Either String [Nfs.Dirent])
+list_directory ctx path = runEitherT $ do
+  ret <- liftIO $ sync_wrap ctx $ Nfs.openDirAsync ctx path
+  dir <- case ret of
+    Left s -> left s
+    Right d -> return d
+  dents <- liftIO $ readdir ctx dir []
+  right dents
+    where
+      readdir :: Nfs.Context -> Nfs.Dir -> [Nfs.Dirent] -> IO [Nfs.Dirent]
+      readdir ctx' dir' dirents = do
+        mdirent <- Nfs.readDir ctx' dir'
+        case mdirent of
+          Just dirent -> readdir ctx' dir' $ dirent : dirents
+          Nothing -> return dirents
+
+test_list_empty_directory :: Nfs.ServerAddress ->
+                             Nfs.ExportName ->
+                             TestTree
+test_list_empty_directory srv xprt =
+  HU.testCase "list contents of empty directory" assertion
+    where
+      assertion = with_mount srv xprt $ \ctx ->
+        with_directory ctx "/" $ \path -> do
+          ret <- list_directory ctx path
+          case ret of
+            Left s -> HU.assertFailure $ "failed to read dir " ++ path ++ ": " ++ s
+            Right dents -> do
+              HU.assertEqual "empty dir must yield 2 dirents" 2 $ length dents
+              HU.assertBool "dirents must be '.' and '..'" $ null $
+                filter (not . is_dot_dir) dents
+
+      is_dot_dir dent = (Nfs.direntName dent == "." || Nfs.direntName dent == "..") &&
+                        Nfs.direntFType3 dent == Nfs.NF3Dir
+
 test_create_and_remove_directory :: Nfs.ServerAddress ->
                                     Nfs.ExportName ->
                                     TestTree
@@ -177,7 +216,7 @@ test_mount_wrong_server = let assertion = do
                                 uuid <- nextRandom >>= \u -> return $ toString u
                                 ret <- mount uuid uuid
                                 case ret of
-                                  Left s -> return ()
+                                  Left _ -> return ()
                                   Right _ -> HU.assertFailure $
                                              "mounting " ++ uuid ++ ":" ++ uuid ++
                                              " succeeded unexpectedly"
@@ -189,7 +228,7 @@ test_mount_wrong_export srv = let assertion = do
                                     uuid <- nextRandom >>= \u -> return $ toString u
                                     ret <- mount srv uuid
                                     case ret of
-                                      Left s -> return ()
+                                      Left _ -> return ()
                                       Right _ -> HU.assertFailure $
                                                  "mounting " ++ srv ++ ":" ++ uuid ++
                                                  " succeeded unexpectedly"
@@ -307,6 +346,7 @@ main = let ings = includingOptions [ Option (Proxy :: Proxy ServerAddressOpt)
        , test_mount_wrong_export server
        , test_mount_wrong_server
        , test_create_and_remove_directory server export
+       , test_list_empty_directory server export
        ]
 
 -- Local Variables: **
