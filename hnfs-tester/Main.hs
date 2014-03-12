@@ -23,6 +23,7 @@ import Data.UUID.V4
 
 import qualified GHC.Event as Ev
 
+import System.FilePath.Posix
 import qualified System.Nfs as Nfs
 
 import Test.Tasty
@@ -116,7 +117,10 @@ mount_and_list srv xprt path = do
               "}"
             print_entries ctx' dir'
 
-with_mount ::  Nfs.ServerAddress -> Nfs.ExportName -> (Nfs.Context -> IO ()) -> IO ()
+with_mount :: Nfs.ServerAddress ->
+              Nfs.ExportName ->
+              (Nfs.Context -> IO ()) ->
+              IO ()
 with_mount srv xprt action = do
   ret <- mount srv xprt
   case ret of
@@ -130,6 +134,43 @@ mount srv xprt = runEitherT $ do
   case ret of
     Left s -> left s
     Right () -> right ctx
+
+with_directory :: Nfs.Context ->
+                  FilePath ->
+                  (FilePath -> IO ()) ->
+                  IO ()
+with_directory ctx parent action = bracket mkdir rmdir action
+  where
+    mkdir :: IO FilePath
+    mkdir = do
+      uuid <- return . toString =<< nextRandom
+      path <- return $ joinPath [ parent, uuid ]
+      ret <- sync_wrap ctx $ Nfs.mkDirAsync ctx path
+      case ret of
+        Left s -> fail $ "failed to create path: " ++ s
+        Right () -> return path
+
+    rmdir :: FilePath -> IO ()
+    rmdir path = do
+      ret <- sync_wrap ctx $ Nfs.rmDirAsync ctx path
+      case ret of
+        -- XXX: does this override the original assertion?
+        Left s -> HU.assertFailure $ "failed to remove path: " ++ s
+        Right () -> return ()
+
+test_create_and_remove_directory :: Nfs.ServerAddress ->
+                                    Nfs.ExportName ->
+                                    TestTree
+test_create_and_remove_directory srv xprt =
+  let assertion = with_mount srv xprt $ \ctx ->
+        with_directory ctx "/" $ \path -> do
+          ret <- sync_wrap ctx $ Nfs.statAsync ctx path
+          case ret of
+            Left s -> HU.assertFailure $ "failed to stat " ++ path ++ ": " ++ s
+            -- TODO: verify that type is directory
+            Right _ -> return ()
+  in
+   HU.testCase "create and remove directory" assertion
 
 test_mount_wrong_server :: TestTree
 test_mount_wrong_server = let assertion = do
@@ -265,6 +306,7 @@ main = let ings = includingOptions [ Option (Proxy :: Proxy ServerAddressOpt)
        , test_mount_ok server export
        , test_mount_wrong_export server
        , test_mount_wrong_server
+       , test_create_and_remove_directory server export
        ]
 
 -- Local Variables: **

@@ -33,6 +33,7 @@ executable hnfs-tester
                         bytestring,
                         clock,
                         either >= 4.1.1,
+                        filepath >= 1.3.0.1,
                         hnfs,
                         statvfs,
                         tagged >= 0.7,
