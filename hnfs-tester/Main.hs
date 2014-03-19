@@ -4,7 +4,6 @@
 --
 -- Licensed under the LGPL v2.1 - see the LICENSE file for details.
 
--- CmdArgs wants this
 {-# LANGUAGE DeriveDataTypeable #-}
 
 module Main where
@@ -61,7 +60,7 @@ register_fd ctx mgr ref = do
   key <- Ev.registerFd mgr (ev_callback ctx mgr ref) fd $ nfs_to_ev_event evts
   writeIORef ref $ Just key
 
-sync_wrap :: Show a => Nfs.Context ->
+sync_wrap :: Nfs.Context ->
              (Nfs.Callback a -> IO (Either String ())) ->
              IO (Either String a)
 sync_wrap ctx async_action = runEitherT $ do
@@ -85,57 +84,27 @@ sync_wrap ctx async_action = runEitherT $ do
   liftIO $ Ev.unregisterFd mgr key
   hoistEither ret''
 
-mount_and_list :: Nfs.ServerAddress -> Nfs.ExportName -> FilePath -> IO ()
-mount_and_list srv xprt path = do
-  ctx <- Nfs.initContext
-  ret <- sync_wrap ctx $ Nfs.mountAsync ctx srv xprt
-  case ret of
-    Left s -> HU.assertFailure $ "failed to mount " ++ srv ++ ":" ++ xprt ++ ": " ++ s
-    Right _ -> do
-      ret' <- sync_wrap ctx $ Nfs.openDirAsync ctx path
-      case ret' of
-        Left s -> HU.assertFailure $ "failed to open dir \"/\": " ++ s
-        Right dir -> print_entries ctx dir
-    where
-      print_entries :: Nfs.Context -> Nfs.Dir -> IO ()
-      print_entries ctx' dir' = do
-        maybe_entry <- Nfs.readDir ctx' dir'
-        case maybe_entry of
-          Nothing -> return ()
-          Just e -> do
-            putStrLn $
-              "{ name = " ++ (Nfs.direntName e) ++
-              ", type = " ++ (show $ Nfs.direntFType3 e) ++
-              ", size = " ++ (show $ Nfs.direntSize e) ++
-              ", mode = " ++ (show $ Nfs.direntMode e) ++
-              ", uid = " ++ (show $ Nfs.direntUid e) ++
-              ", gid = " ++ (show $ Nfs.direntGid e) ++
-              ", atime = " ++ (show $ Nfs.direntATime e) ++
-              ", ctime = " ++ (show $ Nfs.direntCTime e) ++
-              ", mtime = " ++ (show $ Nfs.direntMTime e) ++
-              ", inode = " ++ (show $ Nfs.direntInode e) ++
-              "}"
-            print_entries ctx' dir'
+with_context :: (Nfs.Context -> IO ()) -> IO ()
+with_context = bracket Nfs.initContext Nfs.destroyContext
+
+mount :: Nfs.Context ->
+         Nfs.ServerAddress ->
+         Nfs.ExportName ->
+         IO (Either String ())
+mount ctx srv xprt = do
+  Nfs.setUid ctx 0
+  Nfs.setGid ctx 0
+  sync_wrap ctx $ Nfs.mountAsync ctx srv xprt
 
 with_mount :: Nfs.ServerAddress ->
               Nfs.ExportName ->
               (Nfs.Context -> IO ()) ->
               IO ()
-with_mount srv xprt action = do
-  ret <- mount srv xprt
+with_mount srv xprt action = with_context $ \ctx -> do
+  ret <- mount ctx srv xprt
   case ret of
     Left s -> HU.assertFailure $ "mounting " ++ srv ++ ":" ++ xprt ++ " failed: " ++ s
-    Right ctx -> action ctx
-
-mount :: Nfs.ServerAddress -> Nfs.ExportName -> IO (Either String Nfs.Context)
-mount srv xprt = runEitherT $ do
-  ctx <- liftIO Nfs.initContext
-  liftIO $ Nfs.setUid ctx 0
-  liftIO $ Nfs.setGid ctx 0
-  ret <- liftIO $ sync_wrap ctx $ Nfs.mountAsync ctx srv xprt
-  case ret of
-    Left s -> left s
-    Right () -> right ctx
+    Right () -> action ctx
 
 with_directory :: Nfs.Context ->
                   FilePath ->
@@ -169,6 +138,7 @@ list_directory ctx path = runEitherT $ do
     Left s -> left s
     Right d -> return d
   dents <- liftIO $ readdir ctx dir []
+  liftIO $ Nfs.closeDir ctx dir
   right dents
     where
       readdir :: Nfs.Context -> Nfs.Dir -> [Nfs.Dirent] -> IO [Nfs.Dirent]
@@ -212,100 +182,87 @@ test_create_and_remove_directory srv xprt =
    HU.testCase "create and remove directory" assertion
 
 test_mount_wrong_server :: TestTree
-test_mount_wrong_server = let assertion = do
-                                uuid <- nextRandom >>= \u -> return $ toString u
-                                ret <- mount uuid uuid
-                                case ret of
-                                  Left _ -> return ()
-                                  Right _ -> HU.assertFailure $
-                                             "mounting " ++ uuid ++ ":" ++ uuid ++
-                                             " succeeded unexpectedly"
-                          in
-                           HU.testCase "mount test, wrong server" assertion
+test_mount_wrong_server =
+  let assertion = with_context $ \ctx -> do
+        uuid <- nextRandom >>= \u -> return $ toString u
+        ret <- mount ctx uuid uuid
+        case ret of
+          Left _ -> return ()
+          Right _ -> HU.assertFailure $ "mounting " ++ uuid ++ ":" ++ uuid ++
+                     " succeeded unexpectedly"
+  in
+   HU.testCase "mount test, wrong server" assertion
 
 test_mount_wrong_export :: Nfs.ServerAddress -> TestTree
-test_mount_wrong_export srv = let assertion = do
-                                    uuid <- nextRandom >>= \u -> return $ toString u
-                                    ret <- mount srv uuid
-                                    case ret of
-                                      Left _ -> return ()
-                                      Right _ -> HU.assertFailure $
-                                                 "mounting " ++ srv ++ ":" ++ uuid ++
-                                                 " succeeded unexpectedly"
-                              in
-                               HU.testCase "mount test, wrong export" assertion
+test_mount_wrong_export srv =
+  let assertion = with_context $ \ctx -> do
+        uuid <- nextRandom >>= \u -> return $ toString u
+        ret <- mount ctx srv uuid
+        case ret of
+          Left _ -> return ()
+          Right _ -> HU.assertFailure $ "mounting " ++ srv ++ ":" ++ uuid ++
+                     " succeeded unexpectedly"
+  in
+   HU.testCase "mount test, wrong export" assertion
 
 test_mount_ok :: Nfs.ServerAddress -> Nfs.ExportName -> TestTree
-test_mount_ok srv xprt = let assertion = do
-                               ret <- mount srv xprt
-                               case ret of
-                                 Left s -> HU.assertFailure $
-                                           "mounting " ++ srv ++ ":" ++ xprt ++
-                                           " failed: " ++ s
-                                 Right _ -> return ()
-                         in
-                          HU.testCase "mount test" assertion
+test_mount_ok srv xprt =
+  let assertion = with_context $ \ctx -> do
+        ret <- mount ctx srv xprt
+        case ret of
+          Left s -> HU.assertFailure $ "mounting " ++ srv ++ ":" ++ xprt ++
+                    " failed: " ++ s
+          Right _ -> return ()
+  in
+   HU.testCase "mount test" assertion
 
-test_init_context :: TestTree
-test_init_context = let assertion = do
-                          ctx <- Nfs.initContext
-                          err <- Nfs.getError ctx
-                          HU.assertEqual "initContext failed" Nothing err
-                    in
-                     HU.testCase "test initContext" assertion
-
-test_destroy_context :: TestTree
-test_destroy_context = let assertion = do
-                             ctx <- Nfs.initContext
-                             Nfs.destroyContext ctx
-                       in HU.testCase "test destroyContext" assertion
-
-test_destroy_context_twice :: TestTree
-test_destroy_context_twice = let assertion = do
-                                   ctx <- Nfs.initContext
-                                   Nfs.destroyContext ctx
-                                   Nfs.destroyContext ctx
-                             in HU.testCase "test destroyContext 2x" assertion
+test_init_and_destroy_context :: TestTree
+test_init_and_destroy_context =
+  let assertion = with_context $ \ctx -> do
+        err <- Nfs.getError ctx
+        HU.assertEqual "initContext failed" Nothing err
+  in
+   HU.testCase "test initContext and destroyContext" assertion
 
 test_get_fd :: TestTree
-test_get_fd = let assertion = do
-                    ctx <- Nfs.initContext
-                    fd <- Nfs.getFd ctx
-                    HU.assertBool "got an fd without mounting" (fd < 0)
-              in
-               HU.testCase "test getFd" assertion
+test_get_fd =
+  let assertion = with_context $ \ctx -> do
+        fd <- Nfs.getFd ctx
+        HU.assertBool "got an fd without mounting" (fd < 0)
+  in
+   HU.testCase "test getFd" assertion
 
 test_get_fd_mounted :: Nfs.ServerAddress -> Nfs.ExportName -> TestTree
-test_get_fd_mounted srv xprt = let assertion =
-                                     with_mount srv xprt $ \ctx -> do
-                                       fd <- Nfs.getFd ctx
-                                       HU.assertBool "didn't get an FD back" $ fd >= 0
-                               in
-                                HU.testCase "test getFd mounted" assertion
+test_get_fd_mounted srv xprt =
+  let assertion = with_mount srv xprt $ \ctx -> do
+        fd <- Nfs.getFd ctx
+        HU.assertBool "didn't get an FD back" $ fd >= 0
+  in
+   HU.testCase "test getFd mounted" assertion
 
 test_queue_length :: TestTree
-test_queue_length = let assertion = do
-                          ctx <- Nfs.initContext
-                          l <- Nfs.queueLength ctx
-                          HU.assertEqual "unexpected queue length" 0 l
-                    in
-                     HU.testCase "test queueLength" assertion
+test_queue_length =
+  let assertion = with_context $ \ctx -> do
+        l <- Nfs.queueLength ctx
+        HU.assertEqual "unexpected queue length" 0 l
+  in
+   HU.testCase "test queueLength" assertion
 
 test_get_read_max :: TestTree
-test_get_read_max = let assertion = do
-                          ctx <- Nfs.initContext
-                          l <- Nfs.getReadMax ctx
-                          HU.assertEqual "unexpected read max" 0 l
-                    in
-                     HU.testCase "test getReadMax" assertion
+test_get_read_max =
+  let assertion = with_context $ \ctx -> do
+        l <- Nfs.getReadMax ctx
+        HU.assertEqual "unexpected read max" 0 l
+  in
+   HU.testCase "test getReadMax" assertion
 
 test_get_write_max :: TestTree
-test_get_write_max = let assertion = do
-                           ctx <- Nfs.initContext
-                           l <- Nfs.getWriteMax ctx
-                           HU.assertEqual "unexpected write max" 0 l
-                     in
-                      HU.testCase "test getWriteMax" assertion
+test_get_write_max =
+  let assertion = with_context $ \ctx -> do
+        l <- Nfs.getWriteMax ctx
+        HU.assertEqual "unexpected write max" 0 l
+  in
+   HU.testCase "test getWriteMax" assertion
 
 -- TODO: make this fail with a nicer error message if server / export are not
 -- specified
@@ -334,9 +291,7 @@ main = let ings = includingOptions [ Option (Proxy :: Proxy ServerAddressOpt)
         askOption $ \(ServerAddressOpt server) ->
         askOption $ \(ExportNameOpt export) ->
         testGroup "Tests" $
-       [ test_init_context
-       , test_destroy_context
-       , test_destroy_context_twice
+       [ test_init_and_destroy_context
        , test_get_fd
        , test_get_fd_mounted server export
        , test_queue_length
@@ -351,5 +306,5 @@ main = let ings = includingOptions [ Option (Proxy :: Proxy ServerAddressOpt)
 
 -- Local Variables: **
 -- mode: haskell **
--- compile-command: "cd ../.. && cabal install -v" **
+-- compile-command: "cd .. && cabal install -v" **
 -- End: **
