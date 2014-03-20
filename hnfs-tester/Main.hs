@@ -176,8 +176,8 @@ test_create_and_remove_directory srv xprt =
           ret <- sync_wrap ctx $ Nfs.statAsync ctx path
           case ret of
             Left s -> HU.assertFailure $ "failed to stat " ++ path ++ ": " ++ s
-            -- TODO: verify that type is directory
-            Right _ -> return ()
+            Right stat -> HU.assertBool "stat should indicate it's a directory" $
+                          Nfs.isDirectory stat
   in
    HU.testCase "create and remove directory" assertion
 

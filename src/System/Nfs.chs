@@ -84,6 +84,13 @@ module System.Nfs ( AccessCallback
                   , getFd
                   , getReadMax
                   , getWriteMax
+                  , isBlockDevice
+                  , isCharacterDevice
+                  , isDirectory
+                  , isNamedPipe
+                  , isRegularFile
+                  , isSocket
+                  , isSymbolicLink
                   , linkAsync
                   , lseekAsync
                   , mkDirAsync
@@ -296,7 +303,7 @@ handle_ret_error ctx _ = do
 -- There's not much point in threading the Context or any private data through
 -- libnfs calls as we can use partial application.
 type CCallback = CInt -> -- err
-                 Context -> -- ctx - we have no need for it
+                 Context -> -- we have no need for it
                  Ptr () -> -- data - to be cast
                  Ptr () -> -- private_data - we have no need for it
                  IO ()
@@ -963,6 +970,8 @@ statvfsAsync ctx path cb =
 type BlockCount = Word64
 type BlockSize = Word64
 
+-- Duplicates System.Posix.Files.FileStatus which doesn't have a constructor
+-- exported - bummer.
 data Stat = Stat { statDev :: DeviceID
                  , statIno :: FileID
                  , statMode :: FileMode
@@ -981,6 +990,44 @@ data Stat = Stat { statDev :: DeviceID
 #c
 typedef struct stat stat;
 #endc
+
+-- Redoing the FileStatus functions that get the file type out of the st_mode field.
+-- S_ISxyz cannot easily be used as these are macros (we could write wrappers around
+-- these, but oh well).
+-- Did I mention that it's a bummer we cannot reuse SystemPosix.Files.FileStatus?
+{# enum define FileType { S_IFMT as TypeMask
+                        , S_IFDIR as IfDir
+                        , S_IFCHR as IfChr
+                        , S_IFBLK as IfBlk
+                        , S_IFREG as IfReg
+                        , S_IFIFO as IfFifo
+                        , S_IFLNK as IfLnk
+                        , S_IFSOCK as IfSock
+                        } deriving (Eq, Ord, Show) #}
+
+is_type :: FileType -> Stat -> Bool
+is_type t s = (fromIntegral $ statMode s) .&. (fromEnum TypeMask) == (fromEnum t)
+
+isDirectory :: Stat -> Bool
+isDirectory = is_type IfDir
+
+isRegularFile :: Stat -> Bool
+isRegularFile = is_type IfReg
+
+isSocket :: Stat -> Bool
+isSocket = is_type IfSock
+
+isSymbolicLink :: Stat -> Bool
+isSymbolicLink = is_type IfLnk
+
+isBlockDevice :: Stat -> Bool
+isBlockDevice = is_type IfBlk
+
+isCharacterDevice :: Stat -> Bool
+isCharacterDevice = is_type IfChr
+
+isNamedPipe :: Stat -> Bool
+isNamedPipe = is_type IfFifo
 
 {# pointer* stat as StatPtr -> Stat #}
 
@@ -1005,9 +1052,6 @@ peek_stat_ptr ptr = do
   atime <- peek $ ptr `plusPtr` {# offsetof stat->st_atim #}
   mtime <- peek $ ptr `plusPtr` {# offsetof stat->st_mtim #}
   ctime <- peek $ ptr `plusPtr` {# offsetof stat->st_ctim #}
-  -- {# get stat->st_atime #} ptr
-  -- mime <- {# get stat->st_mtime #} ptr
-  -- ctime <- {# get stat->st_ctime #} ptr
   return $ Stat { statDev = fromIntegral dev
                 , statIno = fromIntegral ino
                 , statMode = fromIntegral mode
