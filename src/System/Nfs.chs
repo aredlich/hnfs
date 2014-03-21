@@ -106,6 +106,7 @@ module System.Nfs ( AccessCallback
                   , readAsync
                   , readDir
                   , readlinkAsync
+                  , rename
                   , renameAsync
                   , rmDir
                   , rmDirAsync
@@ -614,6 +615,13 @@ renameAsync :: Context ->
                IO (Either String ())
 renameAsync ctx from to cb =
   wrap_action ctx (rename_async ctx from to) cb extract_nothing
+
+{# fun nfs_rename as rename_sync { id `Context'
+                                 , withCString* `FilePath'
+                                 , withCString* `FilePath' } -> `CInt' id #}
+
+rename :: Context -> FilePath -> FilePath -> IO (Either String ())
+rename ctx from to = handle_ret_error ctx =<< rename_sync ctx from to
 
 type SymlinkCallback = NoDataCallback
 
