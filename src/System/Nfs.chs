@@ -53,6 +53,7 @@ module System.Nfs ( AccessCallback
                   , chownAsync
                   , closeDir
                   , closeFh
+                  , creat
                   , creatAsync
                   , destroyContext
                   , direntATime
@@ -98,6 +99,7 @@ module System.Nfs ( AccessCallback
                   , mkDirAsync
                   , mount
                   , mountAsync
+                  , open
                   , openAsync
                   , openDir
                   , openDirAsync
@@ -706,6 +708,20 @@ creatAsync :: Context ->
 creatAsync ctx path mode cb =
   wrap_action ctx (creat_async ctx path mode) cb extract_fh
 
+{# fun nfs_creat as creat_sync { id `Context'
+                               , withCString* `FilePath'
+                               , open_mode_to_cint `OpenMode'
+                               , alloca- `Fh' peek* } -> `CInt' id #}
+
+creat :: Context -> FilePath -> OpenMode -> IO (Either String Fh)
+creat ctx path mode = do
+  (ret, fh) <- creat_sync ctx path mode
+  case ret of
+    0 -> return $ Right fh
+    _ -> do
+      mmsg <- getError ctx
+      return $ Left $ errmsg mmsg
+
 {# fun nfs_open_async as open_async { id `Context'
                                     , withCString* `FilePath'
                                     , open_mode_to_cint `OpenMode'
@@ -719,6 +735,20 @@ openAsync :: Context ->
              IO (Either String ())
 openAsync ctx path mode cb =
   wrap_action ctx (open_async ctx path mode) cb extract_fh
+
+{# fun nfs_open as open_sync { id `Context'
+                               , withCString* `FilePath'
+                               , open_mode_to_cint `OpenMode'
+                               , alloca- `Fh' peek* } -> `CInt' id #}
+
+open :: Context -> FilePath -> OpenMode -> IO (Either String Fh)
+open ctx path mode = do
+  (ret, fh) <- open_sync ctx path mode
+  case ret of
+    0 -> return $ Right fh
+    _ -> do
+      mmsg <- getError ctx
+      return $ Left $ errmsg mmsg
 
 type WriteCallback = Callback CSize
 
