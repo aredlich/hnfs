@@ -128,6 +128,7 @@ module System.Nfs ( AccessCallback
                   , statSize
                   , statUid
                   , statvfsAsync
+                  , symlink
                   , symlinkAsync
                   , truncate
                   , truncateAsync
@@ -638,6 +639,13 @@ symlinkAsync :: Context ->
                 IO (Either String ())
 symlinkAsync ctx from to cb =
   wrap_action ctx (symlink_async ctx from to) cb extract_nothing
+
+{# fun nfs_symlink as symlink_sync { id `Context'
+                                   , withCString* `FilePath'
+                                   , withCString* `FilePath' } -> `CInt' id #}
+
+symlink :: Context -> FilePath -> FilePath -> IO (Either String ())
+symlink ctx from to = handle_ret_error ctx =<< symlink_sync ctx from to
 
 type LinkCallback = NoDataCallback
 
