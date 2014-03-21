@@ -76,6 +76,7 @@ module System.Nfs ( AccessCallback
                   , fchmodAsync
                   , fchownAsync
                   , fstatAsync
+                  , fsync
                   , fsyncAsync
                   , ftruncateAsync
                   , initContext
@@ -907,6 +908,12 @@ fsyncAsync :: Context ->
               IO (Either String ())
 fsyncAsync ctx fh cb =
   wrap_action ctx (fsync_async ctx fh) cb extract_nothing
+
+{# fun nfs_fsync as fsync_sync { id `Context'
+                               , id `Fh' } -> `CInt' id #}
+
+fsync :: Context -> Fh -> IO (Either String ())
+fsync ctx fh = handle_ret_error ctx =<< fsync_sync ctx fh
 
 type LSeekCallback = Callback FileOffset
 
