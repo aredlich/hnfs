@@ -103,10 +103,12 @@ module System.Nfs ( AccessCallback
                   , openAsync
                   , openDir
                   , openDirAsync
+                  , pread
                   , preadAsync
                   , pwrite
                   , pwriteAsync
                   , queueLength
+                  , read
                   , readAsync
                   , readDir
                   , readlinkAsync
@@ -154,12 +156,12 @@ import Data.Word (Word64)
 import Foreign.C.String
 import Foreign.C.Types
 import Foreign.ForeignPtr
-import Foreign.Marshal.Alloc (alloca)
+import Foreign.Marshal.Alloc
 import Foreign.Ptr
 import Foreign.Storable
 
--- Really only to hide `truncate' since we provide a call of that name ourselves.
-import Prelude hiding (truncate)
+-- Really only to hide read and truncate' since we provide eponymous calls.
+import Prelude hiding (read, truncate)
 
 import System.IO (SeekMode)
 
@@ -843,6 +845,22 @@ readAsync :: Context ->
 readAsync ctx fh size cb =
   wrap_action ctx (read_async ctx fh size) cb extract_read_data
 
+{# fun nfs_read as read_sync { id `Context'
+                             , id `Fh'
+                             , fromIntegral `Word64'
+                             , id `Ptr CChar' } -> `CInt' id #}
+
+read :: Context -> Fh -> Word64 -> IO (Either String BS.ByteString)
+read ctx fh size = allocaBytes (fromIntegral size) $ \buf -> do
+  ret <- read_sync ctx fh size buf
+  if ret >= 0
+    then do
+      bs <- BS.packCStringLen (castPtr buf, fromIntegral ret)
+      return $ Right bs
+    else do
+      mmsg <- getError ctx
+      return $ Left $ errmsg mmsg
+
 {# fun nfs_pread_async as pread_async { id `Context'
                                       , id `Fh'
                                       , fromIntegral `FileOffset'
@@ -858,6 +876,23 @@ preadAsync :: Context ->
               IO (Either String ())
 preadAsync ctx fh size off cb =
   wrap_action ctx (pread_async ctx fh off size) cb extract_read_data
+
+{# fun nfs_pread as pread_sync { id `Context'
+                               , id `Fh'
+                               , fromIntegral `FileOffset'
+                               , fromIntegral `CSize'
+                               , id `Ptr CChar' } -> `CInt' id #}
+
+pread :: Context -> Fh -> CSize -> FileOffset -> IO (Either String BS.ByteString)
+pread ctx fh size off = allocaBytes (fromIntegral size) $ \buf -> do
+  ret <- pread_sync ctx fh off size buf
+  if ret >= 0
+    then do
+      bs <- BS.packCStringLen (castPtr buf, fromIntegral ret)
+      return $ Right bs
+    else do
+      mmsg <- getError ctx
+      return $ Left $ errmsg mmsg
 
 type FSyncCallback = NoDataCallback
 
