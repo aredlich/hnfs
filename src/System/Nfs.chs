@@ -93,6 +93,7 @@ module System.Nfs ( AccessCallback
                   , isSymbolicLink
                   , linkAsync
                   , lseekAsync
+                  , mkDir
                   , mkDirAsync
                   , mount
                   , mountAsync
@@ -555,6 +556,8 @@ mkDirAsync ctx path cb =
                                , withCString* `FilePath'
                                } -> `CInt' id #}
 
+mkDir :: Context -> FilePath -> IO (Either String ())
+mkDir ctx path = handle_ret_error ctx =<< mkdir_sync ctx path
 
 type RmDirCallback = NoDataCallback
 
