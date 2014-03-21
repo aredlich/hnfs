@@ -292,7 +292,7 @@ from_event (Event e) = fromIntegral e
 -- For now - while I'm still in exploratory mode - errors will be treated
 -- with this (odd?) Either. At a later point exceptions could turn out to be a
 -- better idea.
-handle_ret_error :: Context -> Integer -> IO (Either String ())
+handle_ret_error :: Context -> CInt -> IO (Either String ())
 handle_ret_error _ 0 = return $ Right ()
 handle_ret_error ctx _ = do
   maybe_err <- getError ctx
@@ -335,7 +335,7 @@ type NoDataCallback = Callback ()
 
 type MountCallback = NoDataCallback
 
-type WrappedAction = FunPtr CCallback -> Ptr () -> IO Integer
+type WrappedAction = FunPtr CCallback -> Ptr () -> IO CInt
 
 wrap_action :: Context ->
                WrappedAction ->
@@ -361,7 +361,7 @@ extract_nothing _ _ = return ()
                                       , withCString* `ServerAddress'
                                       , withCString* `ExportName'
                                       , id `FunPtr CCallback'
-                                      , id `Ptr ()' } -> `Integer' fromIntegral #}
+                                      , id `Ptr ()' } -> `CInt' id #}
 
 mountAsync :: Context ->
               ServerAddress ->
@@ -381,7 +381,7 @@ type OpenDirCallback = Callback Dir
 {# fun nfs_opendir_async as opendir_async { id `Context'
                                           , withCString* `FilePath'
                                           , id `FunPtr CCallback'
-                                          , id `Ptr ()' } -> `Integer' fromIntegral #}
+                                          , id `Ptr ()' } -> `CInt' id #}
 
 openDirAsync :: Context ->
                 FilePath ->
@@ -507,7 +507,7 @@ extract_maybe_dirent ptr
 {# fun nfs_mkdir_async as mkdir_async { id `Context'
                                       , withCString* `FilePath'
                                       , id `FunPtr CCallback'
-                                      , id `Ptr ()' } -> `Integer' fromIntegral #}
+                                      , id `Ptr ()' } -> `CInt' id #}
 
 type MkDirCallback = NoDataCallback
 
@@ -518,7 +518,7 @@ mkDirAsync ctx path cb =
 {# fun nfs_rmdir_async as rmdir_async { id `Context'
                                       , withCString* `FilePath'
                                       , id `FunPtr CCallback'
-                                      , id `Ptr ()' } -> `Integer' fromIntegral #}
+                                      , id `Ptr ()' } -> `CInt' id #}
 
 type RmDirCallback = NoDataCallback
 
@@ -532,7 +532,7 @@ type TruncateCallback = NoDataCallback
                                            , withCString* `FilePath'
                                            , fromIntegral `FileOffset'
                                            , id `FunPtr CCallback'
-                                           , id `Ptr ()'} -> `Integer' fromIntegral #}
+                                           , id `Ptr ()'} -> `CInt' id #}
 
 truncateAsync :: Context ->
                  FilePath ->
@@ -548,7 +548,7 @@ type RenameCallback = NoDataCallback
                                         , withCString* `FilePath'
                                         , withCString* `FilePath'
                                         , id `FunPtr CCallback'
-                                        , id `Ptr ()' } -> `Integer' fromIntegral #}
+                                        , id `Ptr ()' } -> `CInt' id #}
 
 renameAsync :: Context ->
                FilePath ->
@@ -564,7 +564,7 @@ type SymlinkCallback = NoDataCallback
                                           , withCString* `FilePath'
                                           , withCString* `FilePath'
                                           , id `FunPtr CCallback'
-                                          , id `Ptr ()' } -> `Integer' fromIntegral #}
+                                          , id `Ptr ()' } -> `CInt' id #}
 
 symlinkAsync :: Context ->
                 FilePath ->
@@ -580,7 +580,7 @@ type LinkCallback = NoDataCallback
                                     , withCString* `FilePath'
                                     , withCString* `FilePath'
                                     , id `FunPtr CCallback'
-                                    , id `Ptr ()' } -> `Integer' fromIntegral #}
+                                    , id `Ptr ()' } -> `CInt' id #}
 
 linkAsync :: Context ->
              FilePath ->
@@ -613,7 +613,7 @@ open_mode_to_cint ReadWrite = 2
                                       , withCString* `FilePath'
                                       , open_mode_to_cint `OpenMode'
                                       , id `FunPtr CCallback'
-                                      , id `Ptr ()' } -> `Integer' fromIntegral #}
+                                      , id `Ptr ()' } -> `CInt' id #}
 
 creatAsync :: Context ->
               FilePath ->
@@ -627,7 +627,7 @@ creatAsync ctx path mode cb =
                                     , withCString* `FilePath'
                                     , open_mode_to_cint `OpenMode'
                                     , id `FunPtr CCallback'
-                                    , id `Ptr ()' } -> `Integer' fromIntegral #}
+                                    , id `Ptr ()' } -> `CInt' id #}
 
 openAsync :: Context ->
              FilePath ->
@@ -651,7 +651,7 @@ bs_as_cstring = BS.useAsCString
                                       , fromIntegral `Int'
                                       , bs_as_cstring* `BS.ByteString'
                                       , id `FunPtr CCallback'
-                                      , id `Ptr ()' } -> `Integer' fromIntegral #}
+                                      , id `Ptr ()' } -> `CInt' id #}
 
 writeAsync :: Context ->
               Fh ->
@@ -667,7 +667,7 @@ writeAsync ctx fh bs cb =
                                         , fromIntegral `Int'
                                         , bs_as_cstring* `BS.ByteString'
                                         , id `FunPtr CCallback'
-                                        , id `Ptr ()' } -> `Integer' fromIntegral #}
+                                        , id `Ptr ()' } -> `CInt' id #}
 
 pwriteAsync :: Context ->
                Fh ->
@@ -682,7 +682,7 @@ pwriteAsync ctx fh bs off cb =
                                     , id `Fh'
                                     , fromIntegral `Word64'
                                     , id `FunPtr CCallback'
-                                    , id `Ptr ()' } -> `Integer' fromIntegral #}
+                                    , id `Ptr ()' } -> `CInt' id #}
 
 type ReadCallback = Callback BS.ByteString
 
@@ -702,7 +702,7 @@ readAsync ctx fh size cb =
                                       , fromIntegral `FileOffset'
                                       , fromIntegral `CSize'
                                       , id `FunPtr CCallback'
-                                      , id `Ptr ()' } -> `Integer' fromIntegral #}
+                                      , id `Ptr ()' } -> `CInt' id #}
 
 preadAsync :: Context ->
               Fh ->
@@ -718,7 +718,7 @@ type FSyncCallback = NoDataCallback
 {# fun nfs_fsync_async as fsync_async { id `Context'
                                       , id `Fh'
                                       , id `FunPtr CCallback'
-                                      , id `Ptr () ' } -> `Integer' fromIntegral #}
+                                      , id `Ptr () ' } -> `CInt' id #}
 
 fsyncAsync :: Context ->
               Fh ->
@@ -737,7 +737,7 @@ extract_file_pos _ ptr = peek $ castPtr ptr
                                      , fromIntegral `FileOffset'
                                      , fromIntegral `Int'
                                      , id `FunPtr CCallback'
-                                     , id `Ptr ()' } -> `Integer' fromIntegral #}
+                                     , id `Ptr ()' } -> `CInt' id #}
 
 lseekAsync :: Context ->
               Fh ->
@@ -752,7 +752,7 @@ lseekAsync ctx fh off mode cb =
                                               , id `Fh'
                                               , fromIntegral `FileOffset'
                                               , id `FunPtr CCallback'
-                                              , id `Ptr ()' } -> `Integer' fromIntegral #}
+                                              , id `Ptr ()' } -> `CInt' id #}
 
 ftruncateAsync :: Context ->
                   Fh ->
@@ -771,7 +771,7 @@ type ChownCallback = NoDataCallback
                                       , fromIntegral `UserID'
                                       , fromIntegral `GroupID'
                                       , id `FunPtr CCallback'
-                                      , id `Ptr ()' } -> `Integer' fromIntegral #}
+                                      , id `Ptr ()' } -> `CInt' id #}
 
 chownAsync :: Context ->
               FilePath ->
@@ -787,7 +787,7 @@ chownAsync ctx path uid gid cb =
                                         , fromIntegral `UserID'
                                         , fromIntegral `GroupID'
                                         , id `FunPtr CCallback'
-                                        , id `Ptr ()' } -> `Integer' fromIntegral #}
+                                        , id `Ptr ()' } -> `CInt' id #}
 
 fchownAsync :: Context ->
                Fh ->
@@ -804,7 +804,7 @@ type ChmodCallback = NoDataCallback
                                       , withCString* `FilePath'
                                       , fromIntegral `FileMode'
                                       , id `FunPtr CCallback'
-                                      , id `Ptr ()' } -> `Integer' fromIntegral #}
+                                      , id `Ptr ()' } -> `CInt' id #}
 
 chmodAsync :: Context ->
               FilePath ->
@@ -818,7 +818,7 @@ chmodAsync ctx path mode cb =
                                         , id `Fh'
                                         , fromIntegral `FileMode'
                                         , id `FunPtr CCallback'
-                                        , id `Ptr ()' } -> `Integer' fromIntegral #}
+                                        , id `Ptr ()' } -> `CInt' id #}
 
 fchmodAsync :: Context ->
                Fh ->
@@ -833,7 +833,7 @@ type ChdirCallback = NoDataCallback
 {# fun nfs_chdir_async as chdir_async { id `Context'
                                       , withCString* `FilePath'
                                       , id `FunPtr CCallback'
-                                      , id `Ptr ()' } -> `Integer' fromIntegral #}
+                                      , id `Ptr ()' } -> `CInt' id #}
 
 chdirAsync :: Context ->
               FilePath ->
@@ -883,7 +883,7 @@ from_access_mode (AccessMode m) = fromIntegral m
                                         , withCString* `FilePath'
                                         , from_access_mode `AccessMode'
                                         , id `FunPtr CCallback'
-                                        , id `Ptr ()' } -> `Integer' fromIntegral #}
+                                        , id `Ptr ()' } -> `CInt' id #}
 
 accessAsync :: Context ->
                FilePath ->
@@ -901,7 +901,7 @@ extract_file_path _ ptr = peekCString $ castPtr ptr
 {# fun nfs_readlink_async as readlink_async { id `Context'
                                             , withCString* `FilePath'
                                             , id `FunPtr CCallback'
-                                            , id `Ptr ()' } -> `Integer' fromIntegral #}
+                                            , id `Ptr ()' } -> `CInt' id #}
 
 readlinkAsync :: Context ->
                  FilePath ->
@@ -958,7 +958,7 @@ extract_statvfs _ ptr = peek $ castPtr ptr
 {#fun nfs_statvfs_async as statvfs_async { id `Context'
                                          , withCString* `FilePath'
                                          , id `FunPtr CCallback'
-                                         , id `Ptr ()' } -> `Integer' fromIntegral #}
+                                         , id `Ptr ()' } -> `CInt' id #}
 
 statvfsAsync :: Context ->
                 FilePath ->
@@ -1083,7 +1083,7 @@ extract_stat _ ptr = peek $ castPtr ptr
 {# fun nfs_stat_async as stat_async { id `Context'
                                     , withCString* `FilePath'
                                     , id `FunPtr CCallback'
-                                    , id `Ptr ()' } -> `Integer' fromIntegral #}
+                                    , id `Ptr ()' } -> `CInt' id #}
 
 statAsync :: Context ->
              FilePath ->
@@ -1095,7 +1095,7 @@ statAsync ctx path cb =
 {# fun nfs_fstat_async as fstat_async { id `Context'
                                       , id `Fh'
                                       , id `FunPtr CCallback'
-                                      , id `Ptr ()' } -> `Integer' fromIntegral #}
+                                      , id `Ptr ()' } -> `CInt' id #}
 
 fstatAsync :: Context ->
               Fh ->
@@ -1110,7 +1110,7 @@ type UTimesCallback = NoDataCallback
                                         , withCString* `FilePath'
                                         , id `TimeValPtr'
                                         , id `FunPtr CCallback'
-                                        , id `Ptr ()' } -> `Integer' fromIntegral #}
+                                        , id `Ptr ()' } -> `CInt' id #}
 
 utimesAsync :: Context ->
                FilePath ->
