@@ -91,6 +91,7 @@ module System.Nfs ( AccessCallback
                   , isRegularFile
                   , isSocket
                   , isSymbolicLink
+                  , link
                   , linkAsync
                   , lseekAsync
                   , mkDir
@@ -662,6 +663,13 @@ linkAsync :: Context ->
              IO (Either String ())
 linkAsync ctx from to cb =
   wrap_action ctx (link_async ctx from to) cb extract_nothing
+
+{# fun nfs_link as link_sync { id `Context'
+                                   , withCString* `FilePath'
+                                   , withCString* `FilePath' } -> `CInt' id #}
+
+link :: Context -> FilePath -> FilePath -> IO (Either String ())
+link ctx from to = handle_ret_error ctx =<< link_sync ctx from to
 
 data Fh_
 
