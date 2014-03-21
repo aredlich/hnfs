@@ -104,6 +104,7 @@ module System.Nfs ( AccessCallback
                   , openDir
                   , openDirAsync
                   , preadAsync
+                  , pwrite
                   , pwriteAsync
                   , queueLength
                   , readAsync
@@ -137,6 +138,7 @@ module System.Nfs ( AccessCallback
                   , truncateAsync
                   , utimesAsync
                   , whichEvents
+                  , write
                   , writeAsync
                   ) where
 
@@ -774,6 +776,21 @@ writeAsync :: Context ->
 writeAsync ctx fh bs cb =
   wrap_action ctx (write_async ctx fh (BS.length bs) bs) cb extract_write_size
 
+{# fun nfs_write as write_sync { id `Context'
+                               , id `Fh'
+                               , fromIntegral `Int'
+                               , bs_as_cstring* `BS.ByteString' } -> `CInt' id #}
+
+write :: Context -> Fh -> BS.ByteString -> IO (Either String CSize)
+write ctx fh bs = handle =<< write_sync ctx fh (BS.length bs) bs
+  where
+    handle :: CInt -> IO (Either String CSize)
+    handle r
+      | r >= 0 = return $ Right $ fromIntegral r
+      | otherwise = do
+        mmsg <- getError ctx
+        return $ Left $ errmsg mmsg
+
 {# fun nfs_pwrite_async as pwrite_async { id `Context'
                                         , id `Fh'
                                         , fromIntegral `FileOffset'
@@ -790,6 +807,22 @@ pwriteAsync :: Context ->
                IO (Either String ())
 pwriteAsync ctx fh bs off cb =
   wrap_action ctx (pwrite_async ctx fh off (BS.length bs) bs) cb extract_write_size
+
+{# fun nfs_pwrite as pwrite_sync { id `Context'
+                                 , id `Fh'
+                                 , fromIntegral `FileOffset'
+                                 , fromIntegral `Int'
+                                 , bs_as_cstring* `BS.ByteString' } -> `CInt' id #}
+
+pwrite :: Context -> Fh -> BS.ByteString -> FileOffset -> IO (Either String CSize)
+pwrite ctx fh bs off = handle =<< pwrite_sync ctx fh off (BS.length bs) bs
+  where
+    handle :: CInt -> IO (Either String CSize)
+    handle r
+      | r >= 0 = return $ Right $ fromIntegral r
+      | otherwise = do
+        mmsg <- getError ctx
+        return $ Left $ errmsg mmsg
 
 {# fun nfs_read_async as read_async { id `Context'
                                     , id `Fh'
