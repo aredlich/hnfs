@@ -107,6 +107,7 @@ module System.Nfs ( AccessCallback
                   , readDir
                   , readlinkAsync
                   , renameAsync
+                  , rmDir
                   , rmDirAsync
                   , service
                   , setGid
@@ -547,11 +548,6 @@ mkDirAsync :: Context -> FilePath -> MkDirCallback -> IO (Either String ())
 mkDirAsync ctx path cb =
   wrap_action ctx (mkdir_async ctx path) cb extract_nothing
 
-{# fun nfs_rmdir_async as rmdir_async { id `Context'
-                                      , withCString* `FilePath'
-                                      , id `FunPtr CCallback'
-                                      , id `Ptr ()' } -> `CInt' id #}
-
 {# fun nfs_mkdir as mkdir_sync { id `Context'
                                , withCString* `FilePath'
                                } -> `CInt' id #}
@@ -559,11 +555,22 @@ mkDirAsync ctx path cb =
 mkDir :: Context -> FilePath -> IO (Either String ())
 mkDir ctx path = handle_ret_error ctx =<< mkdir_sync ctx path
 
+{# fun nfs_rmdir_async as rmdir_async { id `Context'
+                                      , withCString* `FilePath'
+                                      , id `FunPtr CCallback'
+                                      , id `Ptr ()' } -> `CInt' id #}
+
 type RmDirCallback = NoDataCallback
 
 rmDirAsync :: Context -> FilePath -> RmDirCallback -> IO (Either String ())
 rmDirAsync ctx path cb =
   wrap_action ctx (rmdir_async ctx path) cb extract_nothing
+
+{# fun nfs_rmdir as rmdir_sync { id `Context'
+                               , withCString* `FilePath' } -> `CInt' id #}
+
+rmDir :: Context -> FilePath -> IO (Either String ())
+rmDir ctx path = handle_ret_error ctx =<< rmdir_sync ctx path
 
 type TruncateCallback = NoDataCallback
 
