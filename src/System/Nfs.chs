@@ -128,6 +128,7 @@ module System.Nfs ( AccessCallback
                   , statUid
                   , statvfsAsync
                   , symlinkAsync
+                  , truncateSync
                   , truncateAsync
                   , utimesAsync
                   , whichEvents
@@ -587,6 +588,13 @@ truncateAsync :: Context ->
                  IO (Either String ())
 truncateAsync ctx path len cb =
   wrap_action ctx (truncate_async ctx path len) cb extract_nothing
+
+{#fun nfs_truncate as truncate_sync { id `Context'
+                                    , withCString* `FilePath'
+                                    , fromIntegral `FileOffset' } -> `CInt' id #}
+
+truncateSync :: Context -> FilePath -> FileOffset -> IO (Either String ())
+truncateSync ctx path off = handle_ret_error ctx =<< truncate_sync ctx path off
 
 type RenameCallback = NoDataCallback
 
