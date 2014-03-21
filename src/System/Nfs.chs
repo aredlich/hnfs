@@ -376,13 +376,13 @@ mountAsync :: Context ->
 mountAsync ctx addr export cb =
   wrap_action ctx (mount_async ctx addr export) cb extract_nothing
 
-{# fun nfs_mount as mount_ { id `Context'
-                           , withCString* `ServerAddress'
-                           , withCString* `ExportName'
-                           } -> `CInt' id #}
+{# fun nfs_mount as mount_sync { id `Context'
+                               , withCString* `ServerAddress'
+                               , withCString* `ExportName'
+                               } -> `CInt' id #}
 
 mount :: Context -> ServerAddress -> ExportName -> IO (Either String ())
-mount ctx addr xprt = handle_ret_error ctx =<< mount_ ctx addr xprt
+mount ctx addr xprt = handle_ret_error ctx =<< mount_sync ctx addr xprt
 
 data Dir_
 
@@ -408,21 +408,21 @@ openDirAsync ctx path cb =
       extract_dir :: DataExtractor Dir
       extract_dir _ ptr = return $ castPtr ptr
 
-{# fun nfs_opendir as opendir_ { id `Context'
-                               , withCString* `FilePath'
-                               , alloca- `Dir' peek*
-                               } -> `()' #}
+{# fun nfs_opendir as opendir_sync { id `Context'
+                                   , withCString* `FilePath'
+                                   , alloca- `Dir' peek*
+                                   } -> `CInt' id #}
 
 openDir :: Context ->
            FilePath ->
            IO (Either String Dir)
 openDir ctx path = do
-  ptr <- opendir_ ctx path
-  case ptr of
-    nullPtr -> do
+  (ret, dir) <- opendir_sync ctx path
+  case ret of
+    0 -> return $ Right dir
+    _ -> do
       mmsg <- getError ctx
       return $ Left $ errmsg mmsg
-    _ -> return $ Right ptr
 
 -- These ones are only available in linux/nfs3.h which isn't exactly portable.
 -- So let's define a C enum here and have c2hs generate accessors / converters.
@@ -550,6 +550,11 @@ mkDirAsync ctx path cb =
                                       , withCString* `FilePath'
                                       , id `FunPtr CCallback'
                                       , id `Ptr ()' } -> `CInt' id #}
+
+{# fun nfs_mkdir as mkdir_sync { id `Context'
+                               , withCString* `FilePath'
+                               } -> `CInt' id #}
+
 
 type RmDirCallback = NoDataCallback
 
