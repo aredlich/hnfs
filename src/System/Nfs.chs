@@ -128,7 +128,7 @@ module System.Nfs ( AccessCallback
                   , statUid
                   , statvfsAsync
                   , symlinkAsync
-                  , truncateSync
+                  , truncate
                   , truncateAsync
                   , utimesAsync
                   , whichEvents
@@ -150,6 +150,9 @@ import Foreign.ForeignPtr
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr
 import Foreign.Storable
+
+-- Really only to hide `truncate' since we provide a call of that name ourselves.
+import Prelude hiding (truncate)
 
 import System.IO (SeekMode)
 
@@ -593,8 +596,8 @@ truncateAsync ctx path len cb =
                                     , withCString* `FilePath'
                                     , fromIntegral `FileOffset' } -> `CInt' id #}
 
-truncateSync :: Context -> FilePath -> FileOffset -> IO (Either String ())
-truncateSync ctx path off = handle_ret_error ctx =<< truncate_sync ctx path off
+truncate :: Context -> FilePath -> FileOffset -> IO (Either String ())
+truncate ctx path off = handle_ret_error ctx =<< truncate_sync ctx path off
 
 type RenameCallback = NoDataCallback
 
