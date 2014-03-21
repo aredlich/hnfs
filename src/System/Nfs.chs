@@ -6,7 +6,7 @@
 --
 -- Haskell bindings to libnfs - https://github.com/sahlberg/libnfs
 
-{-# LANGUAGE ForeignFunctionInterface #-}
+{-# LANGUAGE ForeignFunctionInterface, EmptyDataDecls #-}
 
 module System.Nfs ( AccessCallback
                   , AccessMode
@@ -94,8 +94,10 @@ module System.Nfs ( AccessCallback
                   , linkAsync
                   , lseekAsync
                   , mkDirAsync
+                  , mount
                   , mountAsync
                   , openAsync
+                  , openDir
                   , openDirAsync
                   , preadAsync
                   , pwriteAsync
@@ -175,7 +177,8 @@ import System.Posix.Types
 {# context lib="nfs" #}
 
 -- struct nfs_context - an opaque handle passed around with pointers
-{# pointer* nfs_context as Context newtype #}
+data Context_
+{# pointer* nfs_context as Context -> Context_ #}
 
 {# fun nfs_destroy_context as destroyContext { id `Context' } -> `()' #}
 
@@ -289,16 +292,18 @@ from_event (Event e) = fromIntegral e
 
 {# fun nfs_queue_length as queueLength { id `Context' } -> `Integer' fromIntegral #}
 
+errmsg :: Maybe String -> String
+errmsg (Just s) = s
+errmsg Nothing = "unspecified error"
+
 -- For now - while I'm still in exploratory mode - errors will be treated
 -- with this (odd?) Either. At a later point exceptions could turn out to be a
 -- better idea.
 handle_ret_error :: Context -> CInt -> IO (Either String ())
 handle_ret_error _ 0 = return $ Right ()
 handle_ret_error ctx _ = do
-  maybe_err <- getError ctx
-  case maybe_err of
-    Nothing -> return $ Left "unspecified error"
-    Just s -> return $ Left s
+  mmsg <- getError ctx
+  return $ Left $ errmsg mmsg
 
 -- There's not much point in threading the Context or any private data through
 -- libnfs calls as we can use partial application.
@@ -371,7 +376,17 @@ mountAsync :: Context ->
 mountAsync ctx addr export cb =
   wrap_action ctx (mount_async ctx addr export) cb extract_nothing
 
-{# pointer* nfsdir as Dir newtype #}
+{# fun nfs_mount as mount_ { id `Context'
+                           , withCString* `ServerAddress'
+                           , withCString* `ExportName'
+                           } -> `CInt' id #}
+
+mount :: Context -> ServerAddress -> ExportName -> IO (Either String ())
+mount ctx addr xprt = handle_ret_error ctx =<< mount_ ctx addr xprt
+
+data Dir_
+
+{# pointer* nfsdir as Dir -> Dir_ #}
 
 {# fun nfs_closedir as closeDir { id `Context'
                                 , id `Dir' } -> `()' #}
@@ -391,7 +406,23 @@ openDirAsync ctx path cb =
   wrap_action ctx (opendir_async ctx path) cb extract_dir
     where
       extract_dir :: DataExtractor Dir
-      extract_dir _ ptr = return $ Dir $ castPtr ptr
+      extract_dir _ ptr = return $ castPtr ptr
+
+{# fun nfs_opendir as opendir_ { id `Context'
+                               , withCString* `FilePath'
+                               , alloca- `Dir' peek*
+                               } -> `()' #}
+
+openDir :: Context ->
+           FilePath ->
+           IO (Either String Dir)
+openDir ctx path = do
+  ptr <- opendir_ ctx path
+  case ptr of
+    nullPtr -> do
+      mmsg <- getError ctx
+      return $ Left $ errmsg mmsg
+    _ -> return $ Right ptr
 
 -- These ones are only available in linux/nfs3.h which isn't exactly portable.
 -- So let's define a C enum here and have c2hs generate accessors / converters.
@@ -590,7 +621,9 @@ linkAsync :: Context ->
 linkAsync ctx from to cb =
   wrap_action ctx (link_async ctx from to) cb extract_nothing
 
-{# pointer* nfsfh as Fh newtype #}
+data Fh_
+
+{# pointer* nfsfh as Fh -> Fh_ #}
 
 -- Even though nfs_close is declared to return an int (< 0 indicating an error),
 -- the implementation of it always returns 0 so we can simply ignore the return value.
@@ -602,7 +635,7 @@ linkAsync ctx from to cb =
 type OpenFileCallback = Callback Fh
 
 extract_fh :: DataExtractor Fh
-extract_fh _ ptr = return $ Fh $ castPtr ptr
+extract_fh _ ptr = return $ castPtr ptr
 
 open_mode_to_cint :: OpenMode -> CInt
 open_mode_to_cint ReadOnly = 0
