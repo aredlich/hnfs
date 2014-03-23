@@ -151,6 +151,7 @@ module System.Nfs ( AccessCallback
                   , symlinkAsync
                   , truncate
                   , truncateAsync
+                  , utimes
                   , utimesAsync
                   , whichEvents
                   , write
@@ -1380,6 +1381,15 @@ utimesAsync :: Context ->
 utimesAsync ctx path tv cb = alloca $ \ptr -> do
   poke ptr tv
   wrap_action ctx (utimes_async ctx path ptr) cb extract_nothing
+
+{# fun nfs_utimes as utimes_sync { id `Context'
+                                 , withCString* `FilePath'
+                                 , id `TimeValPtr' } -> `CInt' id #}
+
+utimes :: Context -> FilePath -> TimeVal -> IO (Either String ())
+utimes ctx path tv = alloca $ \ptr -> do
+  poke ptr tv
+  handle_ret_error ctx =<< utimes_sync ctx path ptr
 
 -- Local Variables: **
 -- mode: haskell **
