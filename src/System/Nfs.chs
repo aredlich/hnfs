@@ -143,6 +143,7 @@ module System.Nfs ( AccessCallback
                   , statRDev
                   , statSize
                   , statUid
+                  , statvfs
                   , statvfsAsync
                   , symlink
                   , symlinkAsync
@@ -439,8 +440,7 @@ openDirAsync ctx path cb =
 
 {# fun nfs_opendir as opendir_sync { id `Context'
                                    , withCString* `FilePath'
-                                   , alloca- `Dir' peek*
-                                   } -> `CInt' id #}
+                                   , alloca- `Dir' peek* } -> `CInt' id #}
 
 openDir :: Context -> FilePath -> IO (Either String Dir)
 openDir ctx path = handle_ret_error' ctx =<< opendir_sync ctx path
@@ -1203,6 +1203,13 @@ statvfsAsync :: Context ->
                 IO (Either String ())
 statvfsAsync ctx path cb =
   wrap_action ctx (statvfs_async ctx path) cb extract_statvfs
+
+{#fun nfs_statvfs as statvfs_sync { id `Context'
+                                  , withCString* `FilePath'
+                                  , alloca- `StatVFS' peek* } -> `CInt' id #}
+
+statvfs :: Context -> FilePath -> IO (Either String StatVFS)
+statvfs ctx path = handle_ret_error' ctx =<< statvfs_sync ctx path
 
 type BlockCount = Word64
 type BlockSize = Word64
