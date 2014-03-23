@@ -81,6 +81,7 @@ module System.Nfs ( AccessCallback
                   , fchmodAsync
                   , fchown
                   , fchownAsync
+                  , fstat
                   , fstatAsync
                   , fsync
                   , fsyncAsync
@@ -131,6 +132,7 @@ module System.Nfs ( AccessCallback
                   , setUid
                   , setTcpSynCount
                   , statATime
+                  , stat
                   , statAsync
                   , statBlkSize
                   , statBlocks
@@ -1336,6 +1338,13 @@ statAsync :: Context ->
 statAsync ctx path cb =
   wrap_action ctx (stat_async ctx path) cb extract_stat
 
+{# fun nfs_stat as stat_sync { id `Context'
+                             , withCString* `FilePath'
+                             , alloca- `Stat' peek* } -> `CInt' id #}
+
+stat :: Context -> FilePath -> IO (Either String Stat)
+stat ctx path = handle_ret_error' ctx =<< stat_sync ctx path
+
 {# fun nfs_fstat_async as fstat_async { id `Context'
                                       , id `Fh'
                                       , id `FunPtr CCallback'
@@ -1347,6 +1356,13 @@ fstatAsync :: Context ->
               IO (Either String ())
 fstatAsync ctx fh cb =
   wrap_action ctx (fstat_async ctx fh) cb extract_stat
+
+{# fun nfs_fstat as fstat_sync { id `Context'
+                               , id `Fh'
+                               , alloca- `Stat' peek* } -> `CInt' id #}
+
+fstat :: Context -> Fh -> IO (Either String Stat)
+fstat ctx fh = handle_ret_error' ctx =<< fstat_sync ctx fh
 
 type UTimesCallback = NoDataCallback
 
