@@ -120,6 +120,7 @@ module System.Nfs ( AccessCallback
                   , read
                   , readAsync
                   , readDir
+                  , readlink
                   , readlinkAsync
                   , rename
                   , renameAsync
@@ -1132,6 +1133,20 @@ readlinkAsync :: Context ->
 readlinkAsync ctx path cb =
   wrap_action ctx (readlink_async ctx path) cb extract_file_path
 
+{# fun nfs_readlink as readlink_sync { id `Context'
+                                     , withCString* `FilePath'
+                                     , id `Ptr CChar'
+                                     , fromIntegral `Int' } -> `CInt' id #}
+
+readlink :: Context -> FilePath -> IO (Either String FilePath)
+readlink ctx path =
+  let
+    len = 4096
+  in
+   allocaBytes len $ \ptr -> do
+     ret <- readlink_sync ctx path ptr len
+     str <- peekCStringLen (ptr, len)
+     handle_ret_error' ctx (ret, str)
 #c
 typedef struct statvfs statvfs;
 #endc
