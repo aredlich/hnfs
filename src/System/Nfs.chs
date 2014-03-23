@@ -43,6 +43,7 @@ module System.Nfs ( AccessCallback
                   , TruncateCallback
                   , UTimesCallback
                   , WriteCallback
+                  , access
                   , accessAsync
                   , accessModeExec
                   , accessModeExists
@@ -1106,6 +1107,13 @@ accessAsync :: Context ->
                IO (Either String ())
 accessAsync ctx path mode cb =
   wrap_action ctx (access_async ctx path mode) cb extract_nothing
+
+{# fun nfs_access as access_sync { id `Context'
+                                 , withCString* `FilePath'
+                                 , from_access_mode `AccessMode' } -> `CInt' id #}
+
+access :: Context -> FilePath -> AccessMode -> IO (Either String ())
+access ctx path mode = handle_ret_error ctx =<< access_sync ctx path mode
 
 type ReadLinkCallback = Callback FilePath
 
