@@ -49,6 +49,7 @@ module System.Nfs ( AccessCallback
                   , accessModeRead
                   , accessModeWrite
                   , chdirAsync
+                  , chmod
                   , chmodAsync
                   , chown
                   , chownAsync
@@ -74,6 +75,7 @@ module System.Nfs ( AccessCallback
                   , eventPri
                   , eventRead
                   , eventWrite
+                  , fchmod
                   , fchmodAsync
                   , fchown
                   , fchownAsync
@@ -1005,6 +1007,13 @@ chmodAsync :: Context ->
 chmodAsync ctx path mode cb =
   wrap_action ctx (chmod_async ctx path mode) cb extract_nothing
 
+{# fun nfs_chmod as chmod_sync { id `Context'
+                               , withCString* `FilePath'
+                               , fromIntegral `FileMode' } -> `CInt' id #}
+
+chmod :: Context -> FilePath -> FileMode -> IO (Either String ())
+chmod ctx path mode = handle_ret_error ctx =<< chmod_sync ctx path mode
+
 {# fun nfs_fchmod_async as fchmod_async { id `Context'
                                         , id `Fh'
                                         , fromIntegral `FileMode'
@@ -1018,6 +1027,13 @@ fchmodAsync :: Context ->
                IO (Either String ())
 fchmodAsync ctx fh mode cb =
   wrap_action ctx (fchmod_async ctx fh mode) cb extract_nothing
+
+{# fun nfs_fchmod as fchmod_sync { id `Context'
+                                 , id `Fh'
+                                 , fromIntegral `FileMode' } -> `CInt' id #}
+
+fchmod :: Context -> Fh -> FileMode -> IO (Either String ())
+fchmod ctx fh mode = handle_ret_error ctx =<< fchmod_sync ctx fh mode
 
 type ChdirCallback = NoDataCallback
 
