@@ -95,6 +95,7 @@ module System.Nfs ( AccessCallback
                   , isSymbolicLink
                   , link
                   , linkAsync
+                  , lseek
                   , lseekAsync
                   , mkDir
                   , mkDirAsync
@@ -935,6 +936,21 @@ lseekAsync :: Context ->
               IO (Either String ())
 lseekAsync ctx fh off mode cb =
   wrap_action ctx (lseek_async ctx fh off $ fromEnum mode) cb extract_file_pos
+
+{# fun nfs_lseek as lseek_sync { id `Context'
+                               , id `Fh'
+                               , fromIntegral `FileOffset'
+                               , fromIntegral `Int'
+                               , alloca- `CULong' peek* } -> `CInt' id #}
+
+lseek :: Context -> Fh -> FileOffset -> SeekMode -> IO (Either String FileOffset)
+lseek ctx fh off mode = do
+  (ret, pos) <- lseek_sync ctx fh off $ fromEnum mode
+  if ret >= 0
+    then return $ Right $ fromIntegral pos
+    else do
+      mmsg <- getError ctx
+      return $ Left $ errmsg mmsg
 
 {# fun nfs_ftruncate_async as ftruncate_async { id `Context'
                                               , id `Fh'
