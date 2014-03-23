@@ -50,6 +50,7 @@ module System.Nfs ( AccessCallback
                   , accessModeWrite
                   , chdirAsync
                   , chmodAsync
+                  , chown
                   , chownAsync
                   , closeDir
                   , closeFh
@@ -74,6 +75,7 @@ module System.Nfs ( AccessCallback
                   , eventRead
                   , eventWrite
                   , fchmodAsync
+                  , fchown
                   , fchownAsync
                   , fstatAsync
                   , fsync
@@ -955,6 +957,14 @@ chownAsync :: Context ->
 chownAsync ctx path uid gid cb =
   wrap_action ctx (chown_async ctx path uid gid) cb extract_nothing
 
+{# fun nfs_chown as chown_sync { id `Context'
+                               , withCString* `FilePath'
+                               , fromIntegral `UserID'
+                               , fromIntegral `GroupID' } -> `CInt' id #}
+
+chown :: Context -> FilePath -> UserID -> GroupID -> IO (Either String ())
+chown ctx path uid gid = handle_ret_error ctx =<< chown_sync ctx path uid gid
+
 {# fun nfs_fchown_async as fchown_async { id `Context'
                                         , id `Fh'
                                         , fromIntegral `UserID'
@@ -970,6 +980,14 @@ fchownAsync :: Context ->
                IO (Either String ())
 fchownAsync ctx fh uid gid cb =
   wrap_action ctx (fchown_async ctx fh uid gid) cb extract_nothing
+
+{# fun nfs_fchown as fchown_sync { id `Context'
+                                 , id `Fh'
+                                 , fromIntegral `UserID'
+                                 , fromIntegral `GroupID' } -> `CInt' id #}
+
+fchown :: Context -> Fh -> UserID -> GroupID -> IO (Either String ())
+fchown ctx fh uid gid = handle_ret_error ctx =<< fchown_sync ctx fh uid gid
 
 type ChmodCallback = NoDataCallback
 
