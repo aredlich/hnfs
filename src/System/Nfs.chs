@@ -317,11 +317,15 @@ errmsg Nothing = "unspecified error"
 -- For now - while I'm still in exploratory mode - errors will be treated
 -- with this (odd?) Either. At a later point exceptions could turn out to be a
 -- better idea.
+handle_ret_error' :: Context -> (CInt, a) -> IO (Either String a)
+handle_ret_error' ctx (err, ret)
+  | err >= 0 = return $ Right ret
+  | otherwise = do
+    mmsg <- getError ctx
+    return $ Left $ errmsg mmsg
+
 handle_ret_error :: Context -> CInt -> IO (Either String ())
-handle_ret_error _ 0 = return $ Right ()
-handle_ret_error ctx _ = do
-  mmsg <- getError ctx
-  return $ Left $ errmsg mmsg
+handle_ret_error ctx err = handle_ret_error' ctx (err, ())
 
 -- There's not much point in threading the Context or any private data through
 -- libnfs calls as we can use partial application.
@@ -431,16 +435,8 @@ openDirAsync ctx path cb =
                                    , alloca- `Dir' peek*
                                    } -> `CInt' id #}
 
-openDir :: Context ->
-           FilePath ->
-           IO (Either String Dir)
-openDir ctx path = do
-  (ret, dir) <- opendir_sync ctx path
-  case ret of
-    0 -> return $ Right dir
-    _ -> do
-      mmsg <- getError ctx
-      return $ Left $ errmsg mmsg
+openDir :: Context -> FilePath -> IO (Either String Dir)
+openDir ctx path = handle_ret_error' ctx =<< opendir_sync ctx path
 
 -- These ones are only available in linux/nfs3.h which isn't exactly portable.
 -- So let's define a C enum here and have c2hs generate accessors / converters.
@@ -721,13 +717,7 @@ creatAsync ctx path mode cb =
                                , alloca- `Fh' peek* } -> `CInt' id #}
 
 creat :: Context -> FilePath -> OpenMode -> IO (Either String Fh)
-creat ctx path mode = do
-  (ret, fh) <- creat_sync ctx path mode
-  case ret of
-    0 -> return $ Right fh
-    _ -> do
-      mmsg <- getError ctx
-      return $ Left $ errmsg mmsg
+creat ctx path mode = handle_ret_error' ctx =<< creat_sync ctx path mode
 
 {# fun nfs_open_async as open_async { id `Context'
                                     , withCString* `FilePath'
@@ -749,13 +739,7 @@ openAsync ctx path mode cb =
                                , alloca- `Fh' peek* } -> `CInt' id #}
 
 open :: Context -> FilePath -> OpenMode -> IO (Either String Fh)
-open ctx path mode = do
-  (ret, fh) <- open_sync ctx path mode
-  case ret of
-    0 -> return $ Right fh
-    _ -> do
-      mmsg <- getError ctx
-      return $ Left $ errmsg mmsg
+open ctx path mode = handle_ret_error' ctx =<< open_sync ctx path mode
 
 type WriteCallback = Callback CSize
 
@@ -781,20 +765,16 @@ writeAsync :: Context ->
 writeAsync ctx fh bs cb =
   wrap_action ctx (write_async ctx fh (BS.length bs) bs) cb extract_write_size
 
+handle_write_error :: Context -> CInt -> IO (Either String CSize)
+handle_write_error ctx ret = handle_ret_error' ctx (ret, fromIntegral ret)
+
 {# fun nfs_write as write_sync { id `Context'
                                , id `Fh'
                                , fromIntegral `Int'
                                , bs_as_cstring* `BS.ByteString' } -> `CInt' id #}
 
 write :: Context -> Fh -> BS.ByteString -> IO (Either String CSize)
-write ctx fh bs = handle =<< write_sync ctx fh (BS.length bs) bs
-  where
-    handle :: CInt -> IO (Either String CSize)
-    handle r
-      | r >= 0 = return $ Right $ fromIntegral r
-      | otherwise = do
-        mmsg <- getError ctx
-        return $ Left $ errmsg mmsg
+write ctx fh bs = handle_write_error ctx =<< write_sync ctx fh (BS.length bs) bs
 
 {# fun nfs_pwrite_async as pwrite_async { id `Context'
                                         , id `Fh'
@@ -820,14 +800,8 @@ pwriteAsync ctx fh bs off cb =
                                  , bs_as_cstring* `BS.ByteString' } -> `CInt' id #}
 
 pwrite :: Context -> Fh -> BS.ByteString -> FileOffset -> IO (Either String CSize)
-pwrite ctx fh bs off = handle =<< pwrite_sync ctx fh off (BS.length bs) bs
-  where
-    handle :: CInt -> IO (Either String CSize)
-    handle r
-      | r >= 0 = return $ Right $ fromIntegral r
-      | otherwise = do
-        mmsg <- getError ctx
-        return $ Left $ errmsg mmsg
+pwrite ctx fh bs off =
+  handle_write_error ctx =<< pwrite_sync ctx fh off (BS.length bs) bs
 
 {# fun nfs_read_async as read_async { id `Context'
                                     , id `Fh'
@@ -848,6 +822,11 @@ readAsync :: Context ->
 readAsync ctx fh size cb =
   wrap_action ctx (read_async ctx fh size) cb extract_read_data
 
+handle_read_error :: Context -> Ptr CChar -> CInt -> IO (Either String BS.ByteString)
+handle_read_error ctx ptr ret = do
+  bs <- BS.packCStringLen (castPtr ptr, fromIntegral ret)
+  handle_ret_error' ctx (ret, bs)
+
 {# fun nfs_read as read_sync { id `Context'
                              , id `Fh'
                              , fromIntegral `Word64'
@@ -855,14 +834,7 @@ readAsync ctx fh size cb =
 
 read :: Context -> Fh -> Word64 -> IO (Either String BS.ByteString)
 read ctx fh size = allocaBytes (fromIntegral size) $ \buf -> do
-  ret <- read_sync ctx fh size buf
-  if ret >= 0
-    then do
-      bs <- BS.packCStringLen (castPtr buf, fromIntegral ret)
-      return $ Right bs
-    else do
-      mmsg <- getError ctx
-      return $ Left $ errmsg mmsg
+  handle_read_error ctx buf =<< read_sync ctx fh size buf
 
 {# fun nfs_pread_async as pread_async { id `Context'
                                       , id `Fh'
@@ -888,14 +860,7 @@ preadAsync ctx fh size off cb =
 
 pread :: Context -> Fh -> CSize -> FileOffset -> IO (Either String BS.ByteString)
 pread ctx fh size off = allocaBytes (fromIntegral size) $ \buf -> do
-  ret <- pread_sync ctx fh off size buf
-  if ret >= 0
-    then do
-      bs <- BS.packCStringLen (castPtr buf, fromIntegral ret)
-      return $ Right bs
-    else do
-      mmsg <- getError ctx
-      return $ Left $ errmsg mmsg
+  handle_read_error ctx buf =<< pread_sync ctx fh off size buf
 
 type FSyncCallback = NoDataCallback
 
@@ -947,11 +912,7 @@ lseekAsync ctx fh off mode cb =
 lseek :: Context -> Fh -> FileOffset -> SeekMode -> IO (Either String FileOffset)
 lseek ctx fh off mode = do
   (ret, pos) <- lseek_sync ctx fh off $ fromEnum mode
-  if ret >= 0
-    then return $ Right $ fromIntegral pos
-    else do
-      mmsg <- getError ctx
-      return $ Left $ errmsg mmsg
+  handle_ret_error' ctx (ret, fromIntegral pos)
 
 {# fun nfs_ftruncate_async as ftruncate_async { id `Context'
                                               , id `Fh'
