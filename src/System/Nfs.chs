@@ -10,6 +10,7 @@
 
 module System.Nfs ( AccessCallback
                   , AccessMode
+                  , AccessTimeVal
                   , BlockCount
                   , BlockSize
                   , Callback
@@ -26,6 +27,7 @@ module System.Nfs ( AccessCallback
                   , LinkCallback
                   , LSeekCallback
                   , MkDirCallback
+                  , ModificationTimeVal
                   , MountCallback
                   , NoDataCallback
                   , OpenDirCallback
@@ -1367,6 +1369,22 @@ fstat ctx fh = handle_ret_error' ctx =<< fstat_sync ctx fh
 
 type UTimesCallback = NoDataCallback
 
+type AccessTimeVal = TimeVal
+type ModificationTimeVal = TimeVal
+
+utimes_helper :: Maybe (AccessTimeVal, ModificationTimeVal) ->
+                 (TimeValPtr -> IO (Either String ())) ->
+                 IO (Either String ())
+utimes_helper Nothing act = act nullPtr
+utimes_helper (Just (atv, mtv)) act =
+  let
+    tvsize = sizeOf atv
+  in
+   allocaBytes (2 * tvsize) $ \ptr -> do
+     poke ptr atv
+     poke (ptr `plusPtr` tvsize) mtv
+     act ptr
+
 {# fun nfs_utimes_async as utimes_async { id `Context'
                                         , withCString* `FilePath'
                                         , id `TimeValPtr'
@@ -1375,21 +1393,22 @@ type UTimesCallback = NoDataCallback
 
 utimesAsync :: Context ->
                FilePath ->
-               TimeVal ->
+               Maybe (AccessTimeVal, ModificationTimeVal) ->
                UTimesCallback ->
                IO (Either String ())
-utimesAsync ctx path tv cb = alloca $ \ptr -> do
-  poke ptr tv
+utimesAsync ctx path mtvs cb = utimes_helper mtvs $ \ptr ->
   wrap_action ctx (utimes_async ctx path ptr) cb extract_nothing
 
 {# fun nfs_utimes as utimes_sync { id `Context'
                                  , withCString* `FilePath'
                                  , id `TimeValPtr' } -> `CInt' id #}
 
-utimes :: Context -> FilePath -> TimeVal -> IO (Either String ())
-utimes ctx path tv = alloca $ \ptr -> do
-  poke ptr tv
-  handle_ret_error ctx =<< utimes_sync ctx path ptr
+utimes :: Context ->
+          FilePath ->
+          Maybe (AccessTimeVal, ModificationTimeVal) ->
+          IO (Either String ())
+utimes ctx path mtvs =
+  utimes_helper mtvs $ \ptr -> handle_ret_error ctx =<< utimes_sync ctx path ptr
 
 -- Local Variables: **
 -- mode: haskell **
