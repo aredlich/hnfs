@@ -228,29 +228,6 @@ maybe_error ptr
 
 {# fun nfs_get_error as getError { id `Context' } -> `Maybe String' maybe_error* #}
 
--- struct nfs_url - an opaque handle (for now, as we could actually introspect
--- it but there's not much point in doing so) passed around with pointers.
--- XXX: struct nfs_url looks pretty unused so we might drop it altogether.
-{# pointer *nfs_url as Url foreign #}
-
-foreign import ccall "nfsc/libnfs.h &nfs_destroy_url"
-  destroy_url :: FunPtr (Ptr () -> IO ())
-
-wrap_url :: Ptr () -> IO Url
-wrap_url curl = newForeignPtr destroy_url curl
-
-{# fun nfs_parse_url_full as parse_url_full { id `Context'
-                                            , withCString* `String'
-                                            } -> `Url' wrap_url* #}
-
-{# fun nfs_parse_url_dir as parse_url_dir { id `Context'
-                                          , withCString* `String'
-                                          } -> `Url' wrap_url* #}
-
-{# fun nfs_parse_url_incomplete as parse_url_incomplete { id `Context'
-                                                        , withCString* `String'
-                                                        } -> `Url' wrap_url* #}
-
 {# fun nfs_get_readmax as getReadMax { id `Context' } -> `Integer' fromIntegral #}
 
 {# fun nfs_get_writemax as getWriteMax { id `Context' } -> `Integer' fromIntegral #}
