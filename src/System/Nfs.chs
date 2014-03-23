@@ -78,6 +78,7 @@ module System.Nfs ( AccessCallback
                   , fstatAsync
                   , fsync
                   , fsyncAsync
+                  , ftruncate
                   , ftruncateAsync
                   , initContext
                   , getCurrentOffset
@@ -967,6 +968,13 @@ ftruncateAsync ctx fh len cb =
   wrap_action ctx (ftruncate_async ctx fh len) cb extract_nothing
 
 {# fun nfs_get_current_offset as getCurrentOffset { id `Fh' } -> `FileOffset' fromIntegral #}
+
+{# fun nfs_ftruncate as ftruncate_sync { id `Context'
+                                       , id `Fh'
+                                       , fromIntegral `FileOffset' } -> `CInt' id #}
+
+ftruncate :: Context -> Fh -> FileOffset -> IO (Either String ())
+ftruncate ctx fh len = handle_ret_error ctx =<< ftruncate_sync ctx fh len
 
 type ChownCallback = NoDataCallback
 
