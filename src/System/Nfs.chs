@@ -48,6 +48,7 @@ module System.Nfs ( AccessCallback
                   , accessModeExists
                   , accessModeRead
                   , accessModeWrite
+                  , chdir
                   , chdirAsync
                   , chmod
                   , chmodAsync
@@ -1048,6 +1049,12 @@ chdirAsync :: Context ->
               IO (Either String ())
 chdirAsync ctx path cb =
   wrap_action ctx (chdir_async ctx path) cb extract_nothing
+
+{# fun nfs_chdir as chdir_sync { id `Context'
+                               , withCString* `FilePath' } -> `CInt' id #}
+
+chdir :: Context -> FilePath -> IO (Either String ())
+chdir ctx path = handle_ret_error ctx =<< chdir_sync ctx path
 
 {# fun nfs_getcwd as get_cwd { id `Context'
                              , id `Ptr CString' } -> `()' #}
