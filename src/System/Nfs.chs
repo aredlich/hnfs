@@ -1416,8 +1416,8 @@ fstatAsync fh cb = with_fh fh $ \ctx -> \fhp ->
                                , id `FhPtr'
                                , alloca- `Stat' peek* } -> `CInt' id #}
 
-fstat :: Context -> Fh -> IO (Either String Stat)
-fstat ctx fh = with_fh fh $ \ctx -> \fhp ->
+fstat :: Fh -> IO (Either String Stat)
+fstat fh = with_fh fh $ \ctx -> \fhp ->
   handle_ret_error' ctx =<< fstat_sync ctx fhp
 
 type UTimesCallback = NoDataCallback
