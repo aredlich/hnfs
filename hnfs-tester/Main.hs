@@ -137,15 +137,15 @@ list_directory ctx path = runEitherT $ do
   dir <- case ret of
     Left s -> left s
     Right d -> return d
-  dents <- liftIO $ readdir ctx dir []
-  liftIO $ Nfs.closeDir ctx dir
+  dents <- liftIO $ readdir dir []
+  liftIO $ Nfs.closeDir dir
   right dents
     where
-      readdir :: Nfs.Context -> Nfs.Dir -> [Nfs.Dirent] -> IO [Nfs.Dirent]
-      readdir ctx' dir' dirents = do
-        mdirent <- Nfs.readDir ctx' dir'
+      readdir :: Nfs.Dir -> [Nfs.Dirent] -> IO [Nfs.Dirent]
+      readdir dir' dirents = do
+        mdirent <- Nfs.readDir dir'
         case mdirent of
-          Just dirent -> readdir ctx' dir' $ dirent : dirents
+          Just dirent -> readdir dir' $ dirent : dirents
           Nothing -> return dirents
 
 test_list_empty_directory :: Nfs.ServerAddress ->
@@ -224,6 +224,22 @@ test_init_and_destroy_context =
   in
    HU.testCase "test initContext and destroyContext" assertion
 
+test_garbage_collect_context :: TestTree
+test_garbage_collect_context =
+  let
+    assertion = Nfs.initContext >> return ()
+  in
+   HU.testCase "test garbage collection of Context" assertion
+
+test_destroy_context_twice :: TestTree
+test_destroy_context_twice =
+  let assertion = do
+        ctx <- Nfs.initContext
+        Nfs.destroyContext ctx
+        Nfs.destroyContext ctx
+  in
+   HU.testCase "test double destroyContext" assertion
+
 test_get_fd :: TestTree
 test_get_fd =
   let assertion = with_context $ \ctx -> do
@@ -292,6 +308,7 @@ main = let ings = includingOptions [ Option (Proxy :: Proxy ServerAddressOpt)
         askOption $ \(ExportNameOpt export) ->
         testGroup "Tests" $
        [ test_init_and_destroy_context
+       , test_destroy_context_twice
        , test_get_fd
        , test_get_fd_mounted server export
        , test_queue_length
