@@ -102,26 +102,6 @@ data SyncNfs = SyncNfs { syncMount :: Nfs.Context ->
                                      IO (Either String Nfs.Stat)
                        }
 
-sync_nfs :: SyncNfs
-sync_nfs = SyncNfs { syncMount = Nfs.mount
-                   , syncOpenDir = Nfs.openDir
-                   , syncMkDir = Nfs.mkDir
-                   , syncRmDir = Nfs.rmDir
-                   , syncStat = Nfs.stat }
-
-async_nfs :: SyncNfs
-async_nfs = SyncNfs { syncMount = \ctx addr xprt ->
-                       sync_wrap ctx $ Nfs.mountAsync ctx addr xprt
-                    , syncOpenDir = \ctx path ->
-                       sync_wrap ctx $ Nfs.openDirAsync ctx path
-                    , syncMkDir = \ctx path ->
-                       sync_wrap ctx $ Nfs.mkDirAsync ctx path
-                    , syncRmDir = \ctx path ->
-                       sync_wrap ctx $ Nfs.rmDirAsync ctx path
-                    , syncStat = \ctx path ->
-                       sync_wrap ctx $ Nfs.statAsync ctx path
-                    }
-
 with_context :: (Nfs.Context -> IO ()) -> IO ()
 with_context = bracket Nfs.initContext Nfs.destroyContext
 
@@ -324,6 +304,52 @@ test_get_write_max =
   in
    HU.testCase "test getWriteMax" assertion
 
+sync_nfs :: SyncNfs
+sync_nfs = SyncNfs { syncMount = Nfs.mount
+                   , syncOpenDir = Nfs.openDir
+                   , syncMkDir = Nfs.mkDir
+                   , syncRmDir = Nfs.rmDir
+                   , syncStat = Nfs.stat }
+
+async_nfs :: SyncNfs
+async_nfs = SyncNfs { syncMount = \ctx addr xprt ->
+                       sync_wrap ctx $ Nfs.mountAsync ctx addr xprt
+                    , syncOpenDir = \ctx path ->
+                       sync_wrap ctx $ Nfs.openDirAsync ctx path
+                    , syncMkDir = \ctx path ->
+                       sync_wrap ctx $ Nfs.mkDirAsync ctx path
+                    , syncRmDir = \ctx path ->
+                       sync_wrap ctx $ Nfs.rmDirAsync ctx path
+                    , syncStat = \ctx path ->
+                       sync_wrap ctx $ Nfs.statAsync ctx path
+                    }
+
+basic_tests :: TestTree
+basic_tests = testGroup "Basic tests" [ test_init_and_destroy_context
+                                      , test_destroy_context_twice
+                                      , test_get_fd
+                                      , test_queue_length
+                                      , test_get_read_max
+                                      , test_get_write_max
+                                      ]
+
+advanced_tests :: Nfs.ServerAddress -> Nfs.ExportName -> [ (SyncNfs -> TestTree) ]
+advanced_tests srv xprt = [ test_get_fd_mounted srv xprt
+                          , test_mount_ok srv xprt
+                          , test_mount_wrong_export srv
+                          , test_mount_wrong_server
+                          , test_create_and_remove_directory srv xprt
+                          , test_list_empty_directory srv xprt
+                          ]
+
+sync_tests :: Nfs.ServerAddress -> Nfs.ExportName -> TestTree
+sync_tests srv xprt = testGroup "Sync interface tests" $
+             fmap (\test -> test sync_nfs) $ advanced_tests srv xprt
+
+async_tests :: Nfs.ServerAddress -> Nfs.ExportName -> TestTree
+async_tests srv xprt = testGroup "Async interface tests" $
+              fmap (\test -> test async_nfs) $ advanced_tests srv xprt
+
 -- TODO: make this fail with a nicer error message if server / export are not
 -- specified
 newtype ServerAddressOpt = ServerAddressOpt Nfs.ServerAddress
@@ -350,20 +376,10 @@ main = let ings = includingOptions [ Option (Proxy :: Proxy ServerAddressOpt)
         defaultMainWithIngredients ings $
         askOption $ \(ServerAddressOpt server) ->
         askOption $ \(ExportNameOpt export) ->
-        testGroup "Tests" $
-       [ test_init_and_destroy_context
-       , test_destroy_context_twice
-       , test_get_fd
-       , test_get_fd_mounted server export sync_nfs
-       , test_queue_length
-       , test_get_read_max
-       , test_get_write_max
-       , test_mount_ok server export sync_nfs
-       , test_mount_wrong_export server sync_nfs
-       , test_mount_wrong_server sync_nfs
-       , test_create_and_remove_directory server export sync_nfs
-       , test_list_empty_directory server export sync_nfs
-       ]
+        testGroup "Tests" $ [ basic_tests
+                            , sync_tests server export
+                            , async_tests server export
+                            ]
 
 -- Local Variables: **
 -- mode: haskell **
