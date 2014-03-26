@@ -175,7 +175,7 @@ test_list_empty_directory :: Nfs.ServerAddress ->
                              SyncNfs ->
                              TestTree
 test_list_empty_directory srv xprt nfs =
-  HU.testCase "list contents of empty directory" assertion
+  HU.testCase "List contents of empty directory" assertion
     where
       assertion = with_mount nfs srv xprt $ \ctx ->
         with_directory nfs ctx "/" $ \path -> do
@@ -203,7 +203,7 @@ test_create_and_remove_directory srv xprt nfs =
             Right stat -> HU.assertBool "stat should indicate it's a directory" $
                           Nfs.isDirectory stat
   in
-   HU.testCase "create and remove directory" assertion
+   HU.testCase "Create and remove directory" assertion
 
 test_mount_wrong_server :: SyncNfs -> TestTree
 test_mount_wrong_server nfs =
@@ -215,7 +215,7 @@ test_mount_wrong_server nfs =
           Right _ -> HU.assertFailure $ "mounting " ++ uuid ++ ":" ++ uuid ++
                      " succeeded unexpectedly"
   in
-   HU.testCase "mount test, wrong server" assertion
+   HU.testCase "Mount wrong server" assertion
 
 test_mount_wrong_export :: Nfs.ServerAddress -> SyncNfs -> TestTree
 test_mount_wrong_export srv nfs =
@@ -227,7 +227,7 @@ test_mount_wrong_export srv nfs =
           Right _ -> HU.assertFailure $ "mounting " ++ srv ++ ":" ++ uuid ++
                      " succeeded unexpectedly"
   in
-   HU.testCase "mount test, wrong export" assertion
+   HU.testCase "Mount wrong export" assertion
 
 test_mount_ok :: Nfs.ServerAddress -> Nfs.ExportName -> SyncNfs -> TestTree
 test_mount_ok srv xprt nfs =
@@ -238,7 +238,7 @@ test_mount_ok srv xprt nfs =
                     " failed: " ++ s
           Right _ -> return ()
   in
-   HU.testCase "mount test" assertion
+   HU.testCase "Mount correct server and export" assertion
 
 test_init_and_destroy_context :: TestTree
 test_init_and_destroy_context =
@@ -246,14 +246,14 @@ test_init_and_destroy_context =
         err <- Nfs.getError ctx
         HU.assertEqual "initContext failed" Nothing err
   in
-   HU.testCase "test initContext and destroyContext" assertion
+   HU.testCase "Init and destroy context" assertion
 
 test_garbage_collect_context :: TestTree
 test_garbage_collect_context =
   let
     assertion = Nfs.initContext >> return ()
   in
-   HU.testCase "test garbage collection of Context" assertion
+   HU.testCase "Garbage collect context" assertion
 
 test_destroy_context_twice :: TestTree
 test_destroy_context_twice =
@@ -262,7 +262,7 @@ test_destroy_context_twice =
         Nfs.destroyContext ctx
         Nfs.destroyContext ctx
   in
-   HU.testCase "test double destroyContext" assertion
+   HU.testCase "Destroy context twice in a row" assertion
 
 test_get_fd :: TestTree
 test_get_fd =
@@ -270,7 +270,7 @@ test_get_fd =
         fd <- Nfs.getFd ctx
         HU.assertBool "got an fd without mounting" (fd < 0)
   in
-   HU.testCase "test getFd" assertion
+   HU.testCase "Get fd from context" assertion
 
 test_get_fd_mounted :: Nfs.ServerAddress -> Nfs.ExportName -> SyncNfs -> TestTree
 test_get_fd_mounted srv xprt nfs =
@@ -278,7 +278,7 @@ test_get_fd_mounted srv xprt nfs =
         fd <- Nfs.getFd ctx
         HU.assertBool "didn't get an FD back" $ fd >= 0
   in
-   HU.testCase "test getFd mounted" assertion
+   HU.testCase "Get fd from mounted context" assertion
 
 test_queue_length :: TestTree
 test_queue_length =
@@ -286,7 +286,7 @@ test_queue_length =
         l <- Nfs.queueLength ctx
         HU.assertEqual "unexpected queue length" 0 l
   in
-   HU.testCase "test queueLength" assertion
+   HU.testCase "Get queue length from context" assertion
 
 test_get_read_max :: TestTree
 test_get_read_max =
@@ -294,7 +294,7 @@ test_get_read_max =
         l <- Nfs.getReadMax ctx
         HU.assertEqual "unexpected read max" 0 l
   in
-   HU.testCase "test getReadMax" assertion
+   HU.testCase "Get read max from context" assertion
 
 test_get_write_max :: TestTree
 test_get_write_max =
@@ -302,7 +302,7 @@ test_get_write_max =
         l <- Nfs.getWriteMax ctx
         HU.assertEqual "unexpected write max" 0 l
   in
-   HU.testCase "test getWriteMax" assertion
+   HU.testCase "Get write max from context" assertion
 
 sync_nfs :: SyncNfs
 sync_nfs = SyncNfs { syncMount = Nfs.mount
@@ -343,11 +343,11 @@ advanced_tests srv xprt = [ test_get_fd_mounted srv xprt
                           ]
 
 sync_tests :: Nfs.ServerAddress -> Nfs.ExportName -> TestTree
-sync_tests srv xprt = testGroup "Sync interface tests" $
+sync_tests srv xprt = testGroup "Synchronous interface tests" $
              fmap (\test -> test sync_nfs) $ advanced_tests srv xprt
 
 async_tests :: Nfs.ServerAddress -> Nfs.ExportName -> TestTree
-async_tests srv xprt = testGroup "Async interface tests" $
+async_tests srv xprt = testGroup "Asynchronous interface tests" $
               fmap (\test -> test async_nfs) $ advanced_tests srv xprt
 
 -- TODO: make this fail with a nicer error message if server / export are not
@@ -376,10 +376,10 @@ main = let ings = includingOptions [ Option (Proxy :: Proxy ServerAddressOpt)
         defaultMainWithIngredients ings $
         askOption $ \(ServerAddressOpt server) ->
         askOption $ \(ExportNameOpt export) ->
-        testGroup "Tests" $ [ basic_tests
-                            , sync_tests server export
-                            , async_tests server export
-                            ]
+        testGroup "HNfs tests" $ [ basic_tests
+                                 , sync_tests server export
+                                 , async_tests server export
+                                 ]
 
 -- Local Variables: **
 -- mode: haskell **
