@@ -84,56 +84,98 @@ sync_wrap ctx async_action = runEitherT $ do
   liftIO $ Ev.unregisterFd mgr key
   hoistEither ret''
 
+data SyncNfs = SyncNfs { syncMount :: Nfs.Context ->
+                                      Nfs.ServerAddress ->
+                                      Nfs.ExportName ->
+                                      IO (Either String ())
+                       , syncOpenDir :: Nfs.Context ->
+                                        FilePath ->
+                                        IO (Either String Nfs.Dir)
+                       , syncMkDir :: Nfs.Context ->
+                                      FilePath ->
+                                      IO (Either String ())
+                       , syncRmDir :: Nfs.Context ->
+                                      FilePath ->
+                                      IO (Either String ())
+                       , syncStat :: Nfs.Context ->
+                                     FilePath ->
+                                     IO (Either String Nfs.Stat)
+                       }
+
+sync_nfs :: SyncNfs
+sync_nfs = SyncNfs { syncMount = Nfs.mount
+                   , syncOpenDir = Nfs.openDir
+                   , syncMkDir = Nfs.mkDir
+                   , syncRmDir = Nfs.rmDir
+                   , syncStat = Nfs.stat }
+
+async_nfs :: SyncNfs
+async_nfs = SyncNfs { syncMount = \ctx addr xprt ->
+                       sync_wrap ctx $ Nfs.mountAsync ctx addr xprt
+                    , syncOpenDir = \ctx path ->
+                       sync_wrap ctx $ Nfs.openDirAsync ctx path
+                    , syncMkDir = \ctx path ->
+                       sync_wrap ctx $ Nfs.mkDirAsync ctx path
+                    , syncRmDir = \ctx path ->
+                       sync_wrap ctx $ Nfs.rmDirAsync ctx path
+                    , syncStat = \ctx path ->
+                       sync_wrap ctx $ Nfs.statAsync ctx path
+                    }
+
 with_context :: (Nfs.Context -> IO ()) -> IO ()
 with_context = bracket Nfs.initContext Nfs.destroyContext
 
-mount :: Nfs.Context ->
+mount :: SyncNfs ->
+         Nfs.Context ->
          Nfs.ServerAddress ->
          Nfs.ExportName ->
          IO (Either String ())
-mount ctx srv xprt = do
+mount nfs ctx srv xprt = do
   Nfs.setUid ctx 0
   Nfs.setGid ctx 0
-  sync_wrap ctx $ Nfs.mountAsync ctx srv xprt
+  syncMount nfs ctx srv xprt
 
-with_mount :: Nfs.ServerAddress ->
+with_mount :: SyncNfs ->
+              Nfs.ServerAddress ->
               Nfs.ExportName ->
               (Nfs.Context -> IO ()) ->
               IO ()
-with_mount srv xprt action = with_context $ \ctx -> do
-  ret <- mount ctx srv xprt
+with_mount nfs srv xprt action = with_context $ \ctx -> do
+  ret <- mount nfs ctx srv xprt
   case ret of
     Left s -> HU.assertFailure $ "mounting " ++ srv ++ ":" ++ xprt ++ " failed: " ++ s
     Right () -> action ctx
 
-with_directory :: Nfs.Context ->
+with_directory :: SyncNfs ->
+                  Nfs.Context ->
                   FilePath ->
                   (FilePath -> IO ()) ->
                   IO ()
-with_directory ctx parent action = bracket mkdir rmdir action
+with_directory nfs ctx parent action = bracket mkdir rmdir action
   where
     mkdir :: IO FilePath
     mkdir = do
-      uuid <- return . toString =<< nextRandom
+      uuid <- return.toString =<< nextRandom
       path <- return $ joinPath [ parent, uuid ]
-      ret <- sync_wrap ctx $ Nfs.mkDirAsync ctx path
+      ret <- syncMkDir nfs ctx path
       case ret of
         Left s -> fail $ "failed to create path: " ++ s
         Right () -> return path
 
     rmdir :: FilePath -> IO ()
     rmdir path = do
-      ret <- sync_wrap ctx $ Nfs.rmDirAsync ctx path
+      ret <- syncRmDir nfs ctx path
       case ret of
         -- XXX: does this override the original assertion?
         Left s -> HU.assertFailure $ "failed to remove path: " ++ s
         Right () -> return ()
 
-list_directory :: Nfs.Context ->
+list_directory :: SyncNfs ->
+                  Nfs.Context ->
                   FilePath ->
                   IO (Either String [Nfs.Dirent])
-list_directory ctx path = runEitherT $ do
-  ret <- liftIO $ sync_wrap ctx $ Nfs.openDirAsync ctx path
+list_directory nfs ctx path = runEitherT $ do
+  ret <- liftIO $ syncOpenDir nfs ctx path
   dir <- case ret of
     Left s -> left s
     Right d -> return d
@@ -150,30 +192,32 @@ list_directory ctx path = runEitherT $ do
 
 test_list_empty_directory :: Nfs.ServerAddress ->
                              Nfs.ExportName ->
+                             SyncNfs ->
                              TestTree
-test_list_empty_directory srv xprt =
+test_list_empty_directory srv xprt nfs =
   HU.testCase "list contents of empty directory" assertion
     where
-      assertion = with_mount srv xprt $ \ctx ->
-        with_directory ctx "/" $ \path -> do
-          ret <- list_directory ctx path
+      assertion = with_mount nfs srv xprt $ \ctx ->
+        with_directory nfs ctx "/" $ \path -> do
+          ret <- list_directory nfs ctx path
           case ret of
             Left s -> HU.assertFailure $ "failed to read dir " ++ path ++ ": " ++ s
             Right dents -> do
               HU.assertEqual "empty dir must yield 2 dirents" 2 $ length dents
               HU.assertBool "dirents must be '.' and '..'" $ null $
-                filter (not . is_dot_dir) dents
+                filter (not.is_dot_dir) dents
 
       is_dot_dir dent = (Nfs.direntName dent == "." || Nfs.direntName dent == "..") &&
                         Nfs.direntFType3 dent == Nfs.NF3Dir
 
 test_create_and_remove_directory :: Nfs.ServerAddress ->
                                     Nfs.ExportName ->
+                                    SyncNfs ->
                                     TestTree
-test_create_and_remove_directory srv xprt =
-  let assertion = with_mount srv xprt $ \ctx ->
-        with_directory ctx "/" $ \path -> do
-          ret <- sync_wrap ctx $ Nfs.statAsync ctx path
+test_create_and_remove_directory srv xprt nfs =
+  let assertion = with_mount nfs srv xprt $ \ctx ->
+        with_directory nfs ctx "/" $ \path -> do
+          ret <- syncStat nfs ctx path
           case ret of
             Left s -> HU.assertFailure $ "failed to stat " ++ path ++ ": " ++ s
             Right stat -> HU.assertBool "stat should indicate it's a directory" $
@@ -181,11 +225,11 @@ test_create_and_remove_directory srv xprt =
   in
    HU.testCase "create and remove directory" assertion
 
-test_mount_wrong_server :: TestTree
-test_mount_wrong_server =
+test_mount_wrong_server :: SyncNfs -> TestTree
+test_mount_wrong_server nfs =
   let assertion = with_context $ \ctx -> do
-        uuid <- nextRandom >>= \u -> return $ toString u
-        ret <- mount ctx uuid uuid
+        uuid <- return.toString =<< nextRandom
+        ret <- mount nfs ctx uuid uuid
         case ret of
           Left _ -> return ()
           Right _ -> HU.assertFailure $ "mounting " ++ uuid ++ ":" ++ uuid ++
@@ -193,11 +237,11 @@ test_mount_wrong_server =
   in
    HU.testCase "mount test, wrong server" assertion
 
-test_mount_wrong_export :: Nfs.ServerAddress -> TestTree
-test_mount_wrong_export srv =
+test_mount_wrong_export :: Nfs.ServerAddress -> SyncNfs -> TestTree
+test_mount_wrong_export srv nfs =
   let assertion = with_context $ \ctx -> do
-        uuid <- nextRandom >>= \u -> return $ toString u
-        ret <- mount ctx srv uuid
+        uuid <- return.toString =<< nextRandom
+        ret <- mount nfs ctx srv uuid
         case ret of
           Left _ -> return ()
           Right _ -> HU.assertFailure $ "mounting " ++ srv ++ ":" ++ uuid ++
@@ -205,10 +249,10 @@ test_mount_wrong_export srv =
   in
    HU.testCase "mount test, wrong export" assertion
 
-test_mount_ok :: Nfs.ServerAddress -> Nfs.ExportName -> TestTree
-test_mount_ok srv xprt =
+test_mount_ok :: Nfs.ServerAddress -> Nfs.ExportName -> SyncNfs -> TestTree
+test_mount_ok srv xprt nfs =
   let assertion = with_context $ \ctx -> do
-        ret <- mount ctx srv xprt
+        ret <- mount nfs ctx srv xprt
         case ret of
           Left s -> HU.assertFailure $ "mounting " ++ srv ++ ":" ++ xprt ++
                     " failed: " ++ s
@@ -248,9 +292,9 @@ test_get_fd =
   in
    HU.testCase "test getFd" assertion
 
-test_get_fd_mounted :: Nfs.ServerAddress -> Nfs.ExportName -> TestTree
-test_get_fd_mounted srv xprt =
-  let assertion = with_mount srv xprt $ \ctx -> do
+test_get_fd_mounted :: Nfs.ServerAddress -> Nfs.ExportName -> SyncNfs -> TestTree
+test_get_fd_mounted srv xprt nfs =
+  let assertion = with_mount nfs srv xprt $ \ctx -> do
         fd <- Nfs.getFd ctx
         HU.assertBool "didn't get an FD back" $ fd >= 0
   in
@@ -310,15 +354,15 @@ main = let ings = includingOptions [ Option (Proxy :: Proxy ServerAddressOpt)
        [ test_init_and_destroy_context
        , test_destroy_context_twice
        , test_get_fd
-       , test_get_fd_mounted server export
+       , test_get_fd_mounted server export sync_nfs
        , test_queue_length
        , test_get_read_max
        , test_get_write_max
-       , test_mount_ok server export
-       , test_mount_wrong_export server
-       , test_mount_wrong_server
-       , test_create_and_remove_directory server export
-       , test_list_empty_directory server export
+       , test_mount_ok server export sync_nfs
+       , test_mount_wrong_export server sync_nfs
+       , test_mount_wrong_server sync_nfs
+       , test_create_and_remove_directory server export sync_nfs
+       , test_list_empty_directory server export sync_nfs
        ]
 
 -- Local Variables: **
