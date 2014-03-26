@@ -1,0 +1,58 @@
+# hnfs - Haskell bindings to libnfs  https://github.com/aredlich/hnfs
+
+## Overview
+
+### Library
+
+Hnfs provides Haskell bindings to the libnfs C library which is developed at
+ https://github.com/sahlberg/libnfs .
+These bindings use the c2hs tool were first and foremost created as an exercise in
+learning Haskell. The interface is not yet considered as stable (see TODO).
+Neither is the code - use at your own risk.
+
+Hnfs exposes both the synchronous and the asynchronous interface of libnfs but
+eschews its "raw" API. The nfs_url API is also omitted for the time being.
+
+### hnfs-tester
+
+Hnfs comes with hnfs-tester, a test tool based on Tasty to exercise the code
+against an existing NFS export.
+
+  Usage: hnfs-tester --server 127.0.0.1 --export /srv/test/
+
+hnfs-tester *SHOULD NOT* be run against an NFS export that is used in production as
+it could lead to data loss.
+
+## Installation Notes
+
+* Get libnfs from https://github.com/aredlich/libnfs as it
+  contains a few modifications which are not pushed upstream yet.
+* Get the haskell libraries listed in hnfs.cabal's build-depends of the library and
+  the test tool. The version numbers listed in hnfs.cabal are based on the system
+  hnfs is developed on; older versions might work as well - YMMV.
+
+## Known Issues
+
+* The asynchronous tests sporadically fail / hang
+
+## TODO
+
+* Investigate and fix spurious hangs / failures of the asynchronous tests
+* Documentation
+* Revisit error handling - use exceptions instead of / together with Either?
+* Support for conduits
+* More tests
+* Split up into Nfs.Base, Nfs.Sync and Nfs.Async?
+
+## License
+
+Just as libnfs, hnfs and hnfs-tester is available under LGPL v2.1 - see the
+LICENSE file.
+
+## Contact
+
+Feedback is very welcome - feel free to contact me with questions / suggestions
+/ bug reports via mail or github's tools (pull requests and issue tracker).
+
+Have fun,
+Arne Redlich <arne.redlich@googlemail.com>
