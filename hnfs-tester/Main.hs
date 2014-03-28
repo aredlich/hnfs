@@ -24,6 +24,7 @@ import qualified GHC.Event as Ev
 
 import System.FilePath.Posix
 import qualified System.Nfs as Nfs
+import System.Posix.IO (OpenMode (..))
 
 import Test.Tasty
 import Test.Tasty.Options
@@ -100,6 +101,13 @@ data SyncNfs = SyncNfs { syncMount :: Nfs.Context ->
                        , syncStat :: Nfs.Context ->
                                      FilePath ->
                                      IO (Either String Nfs.Stat)
+                       , syncCreat :: Nfs.Context ->
+                                      FilePath ->
+                                      OpenMode ->
+                                      IO (Either String Nfs.Fh)
+                       , syncUnlink :: Nfs.Context ->
+                                       FilePath ->
+                                       IO (Either String ())
                        }
 
 with_context :: (Nfs.Context -> IO ()) -> IO ()
@@ -126,6 +134,11 @@ with_mount nfs srv xprt action = with_context $ \ctx -> do
     Left s -> HU.assertFailure $ "mounting " ++ srv ++ ":" ++ xprt ++ " failed: " ++ s
     Right () -> action ctx
 
+mk_random_path :: FilePath -> IO FilePath
+mk_random_path parent = do
+  uuid <- return.toString =<< nextRandom
+  return $ joinPath [ parent, uuid ]
+
 with_directory :: SyncNfs ->
                   Nfs.Context ->
                   FilePath ->
@@ -135,11 +148,10 @@ with_directory nfs ctx parent action = bracket mkdir rmdir action
   where
     mkdir :: IO FilePath
     mkdir = do
-      uuid <- return.toString =<< nextRandom
-      path <- return $ joinPath [ parent, uuid ]
+      path <- mk_random_path parent
       ret <- syncMkDir nfs ctx path
       case ret of
-        Left s -> fail $ "failed to create path: " ++ s
+        Left s -> fail $ "failed to create directory: " ++ s
         Right () -> return path
 
     rmdir :: FilePath -> IO ()
@@ -148,6 +160,28 @@ with_directory nfs ctx parent action = bracket mkdir rmdir action
       case ret of
         -- XXX: does this override the original assertion?
         Left s -> HU.assertFailure $ "failed to remove path: " ++ s
+        Right () -> return ()
+
+with_file :: SyncNfs ->
+             Nfs.Context ->
+             FilePath ->
+             (FilePath -> IO ()) ->
+             IO ()
+with_file nfs ctx parent action = bracket mkfile rmfile action
+  where
+    mkfile :: IO FilePath
+    mkfile = do
+      path <- mk_random_path parent
+      ret <- syncCreat nfs ctx path WriteOnly
+      case ret of
+        Left s -> fail $ "failed to create file: " ++ s
+        Right fh -> Nfs.closeFh fh >> return path
+
+    rmfile :: FilePath -> IO ()
+    rmfile path = do
+      ret <- syncUnlink nfs ctx path
+      case ret of
+        Left s -> fail $ "failed to unlink file " ++ path ++ ": " ++ s
         Right () -> return ()
 
 list_directory :: SyncNfs ->
@@ -204,6 +238,20 @@ test_create_and_remove_directory srv xprt nfs =
                           Nfs.isDirectory stat
   in
    HU.testCase "Create and remove directory" assertion
+
+test_create_and_remove_file srv xprt nfs =
+  let assertion = with_mount nfs srv xprt $ \ctx ->
+        with_directory nfs ctx "/" $ \dir -> do
+          with_file nfs ctx dir $ \fpath -> do
+            ret <- syncStat nfs ctx fpath
+            case ret of
+              Left s -> HU.assertFailure $ "failed to stat " ++ fpath ++ ": " ++ s
+              Right st -> do
+                HU.assertBool "stat should indicate it's a file" $
+                  Nfs.isRegularFile st
+                HU.assertEqual "file size should be 0" 0 $ Nfs.statSize st
+  in
+   HU.testCase "Create and remove file" assertion
 
 test_mount_wrong_server :: SyncNfs -> TestTree
 test_mount_wrong_server nfs =
@@ -309,7 +357,9 @@ sync_nfs = SyncNfs { syncMount = Nfs.mount
                    , syncOpenDir = Nfs.openDir
                    , syncMkDir = Nfs.mkDir
                    , syncRmDir = Nfs.rmDir
-                   , syncStat = Nfs.stat }
+                   , syncStat = Nfs.stat
+                   , syncCreat = Nfs.creat
+                   , syncUnlink = Nfs.unlink }
 
 async_nfs :: SyncNfs
 async_nfs = SyncNfs { syncMount = \ctx addr xprt ->
@@ -322,7 +372,10 @@ async_nfs = SyncNfs { syncMount = \ctx addr xprt ->
                        sync_wrap ctx $ Nfs.rmDirAsync ctx path
                     , syncStat = \ctx path ->
                        sync_wrap ctx $ Nfs.statAsync ctx path
-                    }
+                    , syncCreat = \ctx path mode ->
+                       sync_wrap ctx $ Nfs.creatAsync ctx path mode
+                    , syncUnlink = \ctx path ->
+                       sync_wrap ctx $ Nfs.unlinkAsync ctx path }
 
 basic_tests :: TestTree
 basic_tests = testGroup "Basic tests" [ test_init_and_destroy_context
@@ -340,6 +393,7 @@ advanced_tests srv xprt = [ test_get_fd_mounted srv xprt
                           , test_mount_wrong_server
                           , test_create_and_remove_directory srv xprt
                           , test_list_empty_directory srv xprt
+                          , test_create_and_remove_file srv xprt
                           ]
 
 sync_tests :: Nfs.ServerAddress -> Nfs.ExportName -> TestTree
