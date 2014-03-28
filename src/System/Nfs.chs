@@ -43,6 +43,7 @@ module System.Nfs ( AccessCallback
                   , SymlinkCallback
                   , TimeVal
                   , TruncateCallback
+                  , UnlinkCallback
                   , UTimesCallback
                   , WriteCallback
                   , access
@@ -153,6 +154,8 @@ module System.Nfs ( AccessCallback
                   , symlinkAsync
                   , truncate
                   , truncateAsync
+                  , unlink
+                  , unlinkAsync
                   , utimes
                   , utimesAsync
                   , whichEvents
@@ -1463,6 +1466,24 @@ utimes :: Context ->
           IO (Either String ())
 utimes ctx path mtvs =
   utimes_helper mtvs $ \ptr -> handle_ret_error ctx =<< utimes_sync ctx path ptr
+
+type UnlinkCallback = NoDataCallback
+
+{# fun nfs_unlink_async as unlink_async { with_context* `Context'
+                                        , withCString* `FilePath'
+                                        , id `FunPtr CCallback'
+                                        , id `Ptr ()' } -> `CInt' id #}
+
+unlinkAsync :: Context -> FilePath -> UnlinkCallback -> IO (Either String ())
+unlinkAsync ctx path cb =
+  wrap_action ctx (unlink_async ctx path) cb extract_nothing
+
+{# fun nfs_unlink as unlink_sync { with_context* `Context'
+                                 , withCString* `FilePath' } -> `CInt' id #}
+
+unlink :: Context -> FilePath -> IO (Either String ())
+unlink ctx path =
+  handle_ret_error ctx =<< unlink_sync ctx path
 
 -- Local Variables: **
 -- mode: haskell **
