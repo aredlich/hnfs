@@ -162,6 +162,17 @@ with_directory nfs ctx parent action = bracket mkdir rmdir action
         Left s -> HU.assertFailure $ "failed to remove path: " ++ s
         Right () -> return ()
 
+with_directory' :: SyncNfs ->
+                   Nfs.ServerAddress ->
+                   Nfs.ExportName ->
+                   FilePath ->
+                   (Nfs.Context -> FilePath -> IO ()) ->
+                   IO ()
+with_directory' nfs addr xprt parent action =
+  with_mount nfs addr xprt $ \ctx ->
+    with_directory nfs ctx parent $ \path ->
+      action ctx path
+
 with_file :: SyncNfs ->
              Nfs.Context ->
              FilePath ->
@@ -211,15 +222,14 @@ test_list_empty_directory :: Nfs.ServerAddress ->
 test_list_empty_directory srv xprt nfs =
   HU.testCase "List contents of empty directory" assertion
     where
-      assertion = with_mount nfs srv xprt $ \ctx ->
-        with_directory nfs ctx "/" $ \path -> do
-          ret <- list_directory nfs ctx path
-          case ret of
-            Left s -> HU.assertFailure $ "failed to read dir " ++ path ++ ": " ++ s
-            Right dents -> do
-              HU.assertEqual "empty dir must yield 2 dirents" 2 $ length dents
-              HU.assertBool "dirents must be '.' and '..'" $ null $
-                filter (not.is_dot_dir) dents
+      assertion = with_directory' nfs srv xprt "/" $ \ctx path -> do
+        ret <- list_directory nfs ctx path
+        case ret of
+          Left s -> HU.assertFailure $ "failed to read dir " ++ path ++ ": " ++ s
+          Right dents -> do
+            HU.assertEqual "empty dir must yield 2 dirents" 2 $ length dents
+            HU.assertBool "dirents must be '.' and '..'" $ null $
+              filter (not.is_dot_dir) dents
 
       is_dot_dir dent = (Nfs.direntName dent == "." || Nfs.direntName dent == "..") &&
                         Nfs.direntFType3 dent == Nfs.NF3Dir
@@ -229,27 +239,25 @@ test_create_and_remove_directory :: Nfs.ServerAddress ->
                                     SyncNfs ->
                                     TestTree
 test_create_and_remove_directory srv xprt nfs =
-  let assertion = with_mount nfs srv xprt $ \ctx ->
-        with_directory nfs ctx "/" $ \path -> do
-          ret <- syncStat nfs ctx path
-          case ret of
-            Left s -> HU.assertFailure $ "failed to stat " ++ path ++ ": " ++ s
-            Right stat -> HU.assertBool "stat should indicate it's a directory" $
-                          Nfs.isDirectory stat
+  let assertion = with_directory' nfs srv xprt "/" $ \ctx path -> do
+        ret <- syncStat nfs ctx path
+        case ret of
+          Left s -> HU.assertFailure $ "failed to stat " ++ path ++ ": " ++ s
+          Right stat -> HU.assertBool "stat should indicate it's a directory" $
+                        Nfs.isDirectory stat
   in
    HU.testCase "Create and remove directory" assertion
 
 test_create_and_remove_file srv xprt nfs =
-  let assertion = with_mount nfs srv xprt $ \ctx ->
-        with_directory nfs ctx "/" $ \dir -> do
-          with_file nfs ctx dir $ \fpath -> do
-            ret <- syncStat nfs ctx fpath
-            case ret of
-              Left s -> HU.assertFailure $ "failed to stat " ++ fpath ++ ": " ++ s
-              Right st -> do
-                HU.assertBool "stat should indicate it's a file" $
-                  Nfs.isRegularFile st
-                HU.assertEqual "file size should be 0" 0 $ Nfs.statSize st
+  let assertion = with_directory' nfs srv xprt "/" $ \ctx dir ->
+        with_file nfs ctx dir $ \fpath -> do
+          ret <- syncStat nfs ctx fpath
+          case ret of
+            Left s -> HU.assertFailure $ "failed to stat " ++ fpath ++ ": " ++ s
+            Right st -> do
+              HU.assertBool "stat should indicate it's a file" $
+                Nfs.isRegularFile st
+              HU.assertEqual "file size should be 0" 0 $ Nfs.statSize st
   in
    HU.testCase "Create and remove file" assertion
 
