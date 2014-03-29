@@ -13,12 +13,16 @@ import Control.Exception
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Either
 
+import qualified Data.ByteString as BS
+import qualified Data.ByteString.Char8 as BSC8
 import Data.IORef
 import Data.Monoid
 import Data.Typeable (Typeable)
 import Data.Proxy
 import Data.UUID hiding (null)
 import Data.UUID.V4
+
+import Foreign.C.Types
 
 import qualified GHC.Event as Ev
 
@@ -101,6 +105,18 @@ data SyncNfs = SyncNfs { syncMount :: Nfs.Context ->
                        , syncStat :: Nfs.Context ->
                                      FilePath ->
                                      IO (Either String Nfs.Stat)
+                       , syncOpen :: Nfs.Context ->
+                                     FilePath ->
+                                     OpenMode ->
+                                     IO (Either String Nfs.Fh)
+                       , syncWrite :: Nfs.Context ->
+                                      Nfs.Fh ->
+                                      BS.ByteString ->
+                                      IO (Either String CSize)
+                       , syncRead :: Nfs.Context ->
+                                     Nfs.Fh ->
+                                     CSize ->
+                                     IO (Either String BS.ByteString)
                        , syncCreat :: Nfs.Context ->
                                       FilePath ->
                                       OpenMode ->
@@ -261,6 +277,40 @@ test_create_and_remove_file srv xprt nfs =
   in
    HU.testCase "Create and remove file" assertion
 
+test_write_and_read_file srv xprt nfs =
+  let pattern = BSC8.pack "of no particular importance"
+      assertion = with_directory' nfs srv xprt "/" $ \ctx dir ->
+        with_file nfs ctx dir $ \fpath -> do
+          res <- runEitherT $ do
+            ret <- liftIO $ syncOpen nfs ctx fpath WriteOnly
+            fh <- case ret of
+              Left s -> left $ "opening for write failed: " ++ s
+              Right fh' -> return fh'
+            wret <- liftIO $ syncWrite nfs ctx fh pattern
+            case wret of
+              Left s -> left $ "write failed: " ++ s
+              Right size -> liftIO $ HU.assertEqual
+                            "pattern size bytes should've been written"
+                            (BS.length pattern) (fromIntegral size)
+            liftIO $ Nfs.closeFh fh
+            ret <- liftIO $ syncOpen nfs ctx fpath ReadOnly
+            fh <- case ret of
+              Left s -> left $ "opening for read failed: " ++ s
+              Right fh' -> return fh'
+            rret <- liftIO $ syncRead nfs ctx fh (fromIntegral $ BS.length pattern)
+            case rret of
+              Left s -> left $ "read failed: " ++ s
+              Right bs -> liftIO $ HU.assertEqual
+                          "read pattern should match written pattern"
+                          pattern bs
+            liftIO $ Nfs.closeFh fh
+            right ()
+          case res of
+            Left s -> HU.assertFailure $ "test failure: " ++ s
+            Right () -> return ()
+  in
+   HU.testCase "Write to and read from file" assertion
+
 test_mount_wrong_server :: SyncNfs -> TestTree
 test_mount_wrong_server nfs =
   let assertion = with_context $ \ctx -> do
@@ -367,7 +417,10 @@ sync_nfs = SyncNfs { syncMount = Nfs.mount
                    , syncRmDir = Nfs.rmDir
                    , syncStat = Nfs.stat
                    , syncCreat = Nfs.creat
-                   , syncUnlink = Nfs.unlink }
+                   , syncUnlink = Nfs.unlink
+                   , syncOpen = Nfs.open
+                   , syncRead = \_ fh size -> Nfs.read fh size
+                   , syncWrite = \_ fh bs -> Nfs.write fh bs }
 
 async_nfs :: SyncNfs
 async_nfs = SyncNfs { syncMount = \ctx addr xprt ->
@@ -383,7 +436,14 @@ async_nfs = SyncNfs { syncMount = \ctx addr xprt ->
                     , syncCreat = \ctx path mode ->
                        sync_wrap ctx $ Nfs.creatAsync ctx path mode
                     , syncUnlink = \ctx path ->
-                       sync_wrap ctx $ Nfs.unlinkAsync ctx path }
+                       sync_wrap ctx $ Nfs.unlinkAsync ctx path
+                    , syncOpen = \ctx path mode ->
+                       sync_wrap ctx $ Nfs.openAsync ctx path mode
+                    , syncRead = \ctx fh size ->
+                       sync_wrap ctx $ Nfs.readAsync fh size
+                    , syncWrite = \ctx fh bs ->
+                       sync_wrap ctx $ Nfs.writeAsync fh bs
+                    }
 
 basic_tests :: TestTree
 basic_tests = testGroup "Basic tests" [ test_init_and_destroy_context
@@ -402,6 +462,7 @@ advanced_tests srv xprt = [ test_get_fd_mounted srv xprt
                           , test_create_and_remove_directory srv xprt
                           , test_list_empty_directory srv xprt
                           , test_create_and_remove_file srv xprt
+                          , test_write_and_read_file srv xprt
                           ]
 
 sync_tests :: Nfs.ServerAddress -> Nfs.ExportName -> TestTree
