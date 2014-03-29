@@ -871,7 +871,7 @@ pwrite fh bs off = with_fh fh $ \ctx -> \fhp ->
 
 {# fun nfs_read_async as read_async { with_context* `Context'
                                     , id `FhPtr'
-                                    , fromIntegral `Word64'
+                                    , fromIntegral `CSize'
                                     , id `FunPtr CCallback'
                                     , id `Ptr ()' } -> `CInt' id #}
 
@@ -881,7 +881,7 @@ extract_read_data :: DataExtractor BS.ByteString
 extract_read_data len ptr = BS.packCStringLen (castPtr ptr, fromIntegral len)
 
 readAsync :: Fh ->
-             Word64 ->
+             CSize ->
              ReadCallback ->
              IO (Either String ())
 readAsync fh size cb = with_fh fh $ \ctx -> \fhp ->
@@ -894,10 +894,10 @@ handle_read_error ctx ptr ret = do
 
 {# fun nfs_read as read_sync { with_context* `Context'
                              , id `FhPtr'
-                             , fromIntegral `Word64'
+                             , fromIntegral `CSize'
                              , id `Ptr CChar' } -> `CInt' id #}
 
-read :: Fh -> Word64 -> IO (Either String BS.ByteString)
+read :: Fh -> CSize -> IO (Either String BS.ByteString)
 read fh size = with_fh fh $ \ctx -> \fhp ->
   allocaBytes (fromIntegral size) $ \buf ->
     handle_read_error ctx buf =<< read_sync ctx fhp size buf
