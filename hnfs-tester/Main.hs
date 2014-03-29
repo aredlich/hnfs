@@ -29,6 +29,7 @@ import qualified GHC.Event as Ev
 import System.FilePath.Posix
 import qualified System.Nfs as Nfs
 import System.Posix.IO (OpenMode (..))
+import System.Posix.Types
 
 import Test.Tasty
 import Test.Tasty.Options
@@ -105,6 +106,9 @@ data SyncNfs = SyncNfs { syncMount :: Nfs.Context ->
                        , syncStat :: Nfs.Context ->
                                      FilePath ->
                                      IO (Either String Nfs.Stat)
+                       , syncFStat :: Nfs.Context ->
+                                     Nfs.Fh ->
+                                     IO (Either String Nfs.Stat)
                        , syncOpen :: Nfs.Context ->
                                      FilePath ->
                                      OpenMode ->
@@ -113,10 +117,20 @@ data SyncNfs = SyncNfs { syncMount :: Nfs.Context ->
                                       Nfs.Fh ->
                                       BS.ByteString ->
                                       IO (Either String CSize)
+                       , syncPWrite :: Nfs.Context ->
+                                       Nfs.Fh ->
+                                       BS.ByteString ->
+                                       FileOffset ->
+                                       IO (Either String CSize)
                        , syncRead :: Nfs.Context ->
                                      Nfs.Fh ->
                                      CSize ->
                                      IO (Either String BS.ByteString)
+                       , syncPRead :: Nfs.Context ->
+                                      Nfs.Fh ->
+                                      CSize ->
+                                      FileOffset ->
+                                      IO (Either String BS.ByteString)
                        , syncCreat :: Nfs.Context ->
                                       FilePath ->
                                       OpenMode ->
@@ -124,6 +138,14 @@ data SyncNfs = SyncNfs { syncMount :: Nfs.Context ->
                        , syncUnlink :: Nfs.Context ->
                                        FilePath ->
                                        IO (Either String ())
+                       , syncTruncate :: Nfs.Context ->
+                                         FilePath ->
+                                         FileOffset ->
+                                         IO (Either String ())
+                       , syncFTruncate :: Nfs.Context ->
+                                          Nfs.Fh ->
+                                          FileOffset ->
+                                          IO (Either String ())
                        }
 
 with_context :: (Nfs.Context -> IO ()) -> IO ()
@@ -297,7 +319,7 @@ test_write_and_read_file srv xprt nfs =
       assertion = with_directory' nfs srv xprt "/" $ \ctx dir ->
         with_file nfs ctx dir $ \fpath -> do
           with_fh nfs ctx fpath WriteOnly $ \fh -> do
-            wret <- liftIO $ syncWrite nfs ctx fh pattern
+            wret <- syncWrite nfs ctx fh pattern
             case wret of
               Left s -> HU.assertFailure $ "write failed: " ++ s
               Right size -> HU.assertEqual
@@ -312,6 +334,87 @@ test_write_and_read_file srv xprt nfs =
                           pattern bs
   in
    HU.testCase "Write to and read from file" assertion
+
+test_truncate_and_stat srv xprt nfs =
+  let tsize = 12345
+      assertion =  with_directory' nfs srv xprt "/" $ \ctx dir ->
+        with_file nfs ctx dir $ \fpath -> do
+          res <- runEitherT $ do
+            ret <- liftIO $ syncTruncate nfs ctx fpath $ fromIntegral tsize
+            case ret of
+              Left s -> left $ "truncate failed: " ++ s
+              Right _ -> right ()
+            stret <- liftIO $ syncStat nfs ctx fpath
+            st <- case stret of
+              Left s -> left $ "fstat failed: " ++ s
+              Right st' -> right st'
+            liftIO $ HU.assertBool "stat should indicate it's a file" $
+              Nfs.isRegularFile st
+            liftIO $ HU.assertEqual "file size should match truncated size"
+              tsize $ Nfs.statSize st
+            right ()
+          case res of
+            Left s -> HU.assertFailure s
+            Right () -> return ()
+  in
+   HU.testCase "truncate and stat file" assertion
+
+test_ftruncate_and_fstat srv xprt nfs =
+  let tsize = 67890
+      assertion =  with_directory' nfs srv xprt "/" $ \ctx dir ->
+        with_file nfs ctx dir $ \fpath -> do
+          with_fh nfs ctx fpath WriteOnly $ \fh -> do
+            res <- runEitherT $ do
+              ret <- liftIO $ syncFTruncate nfs ctx fh $ fromIntegral tsize
+              case ret of
+                Left s -> left $ "ftruncate failed: " ++ s
+                Right _ -> right ()
+              stret <- liftIO $ syncFStat nfs ctx fh
+              st <- case stret of
+                Left s -> left $ "fstat failed: " ++ s
+                Right st' -> right st'
+              liftIO $ HU.assertBool "stat should indicate it's a file" $
+                Nfs.isRegularFile st
+              liftIO $ HU.assertEqual "file size should match truncated size"
+                tsize $ Nfs.statSize st
+              right ()
+            case res of
+              Left s -> HU.assertFailure s
+              Right () -> return ()
+  in
+   HU.testCase "ftruncate and fstat file" assertion
+
+test_ftruncate_pwrite_and_pread_file srv xprt nfs =
+  let pattern = BSC8.pack "not of any importance either"
+      offset = 42
+      tsize = offset + (BS.length pattern)
+      assertion = with_directory' nfs srv xprt "/" $ \ctx dir ->
+        with_file nfs ctx dir $ \fpath -> do
+          with_fh nfs ctx fpath ReadWrite $ \fh -> do
+            res <- runEitherT $ do
+              ret <- liftIO $ syncFTruncate nfs ctx fh $ fromIntegral tsize
+              case ret of
+                Left s -> left $ "ftruncate failed: " ++ s
+                Right _ -> right ()
+              wret <- liftIO $ syncPWrite nfs ctx fh pattern $ fromIntegral offset
+              case wret of
+                Left s -> left $ "pwrite failed: " ++ s
+                Right size -> liftIO $ HU.assertEqual
+                              "pattern size bytes should've been written"
+                             (BS.length pattern) (fromIntegral size)
+              rret <- liftIO $ syncPRead nfs ctx fh (fromIntegral $ BS.length pattern)
+                      $ fromIntegral offset
+              case rret of
+                Left s -> left $ "pread failed: " ++ s
+                Right bs -> do
+                  liftIO $ HU.assertEqual "read pattern should match written pattern"
+                    pattern bs
+                  right ()
+            case res of
+              Left s -> HU.assertFailure s
+              Right _ -> return ()
+  in
+   HU.testCase "FTruncate, pwrite to and pread from file" assertion
 
 test_mount_wrong_server :: Nfs.ServerAddress -> Nfs.ExportName -> SyncNfs -> TestTree
 test_mount_wrong_server _ _ nfs =
@@ -419,10 +522,15 @@ sync_nfs = SyncNfs { syncMount = Nfs.mount
                    , syncRmDir = Nfs.rmDir
                    , syncStat = Nfs.stat
                    , syncCreat = Nfs.creat
+                   , syncTruncate = Nfs.truncate
                    , syncUnlink = Nfs.unlink
                    , syncOpen = Nfs.open
                    , syncRead = \_ fh size -> Nfs.read fh size
-                   , syncWrite = \_ fh bs -> Nfs.write fh bs }
+                   , syncPRead = \_ fh size off -> Nfs.pread fh size off
+                   , syncWrite = \_ fh bs -> Nfs.write fh bs
+                   , syncPWrite = \_ fh bs off -> Nfs.pwrite fh bs off
+                   , syncFTruncate = \_ fh off -> Nfs.ftruncate fh off
+                   , syncFStat = \_ fh -> Nfs.fstat fh }
 
 async_nfs :: SyncNfs
 async_nfs = SyncNfs { syncMount = \ctx addr xprt ->
@@ -443,9 +551,18 @@ async_nfs = SyncNfs { syncMount = \ctx addr xprt ->
                        sync_wrap ctx $ Nfs.openAsync ctx path mode
                     , syncRead = \ctx fh size ->
                        sync_wrap ctx $ Nfs.readAsync fh size
+                    , syncPRead = \ctx fh size off ->
+                       sync_wrap ctx $ Nfs.preadAsync fh size off
                     , syncWrite = \ctx fh bs ->
                        sync_wrap ctx $ Nfs.writeAsync fh bs
-                    }
+                    , syncPWrite = \ctx fh bs off ->
+                       sync_wrap ctx $ Nfs.pwriteAsync fh bs off
+                    , syncTruncate = \ctx path off ->
+                       sync_wrap ctx $ Nfs.truncateAsync ctx path off
+                    , syncFTruncate = \ctx fh off ->
+                       sync_wrap ctx $ Nfs.ftruncateAsync fh off
+                    , syncFStat = \ctx fh ->
+                       sync_wrap ctx $ Nfs.fstatAsync fh }
 
 basic_tests :: TestTree
 basic_tests = testGroup "Basic tests" [ test_init_and_destroy_context
@@ -464,7 +581,10 @@ advanced_tests = [ test_get_fd_mounted
                  , test_create_and_remove_directory
                  , test_list_empty_directory
                  , test_create_and_remove_file
-                 , test_write_and_read_file ]
+                 , test_write_and_read_file
+                 , test_truncate_and_stat
+                 , test_ftruncate_and_fstat
+                 , test_ftruncate_pwrite_and_pread_file ]
 
 sync_tests :: Nfs.ServerAddress -> Nfs.ExportName -> TestTree
 sync_tests srv xprt = testGroup "Synchronous interface tests" $
