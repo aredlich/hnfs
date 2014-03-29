@@ -269,7 +269,8 @@ test_list_empty_directory srv xprt nfs =
             HU.assertBool "dirents must be '.' and '..'" $ null $
               filter (not.is_dot_dir) dents
 
-      is_dot_dir dent = (Nfs.direntName dent == "." || Nfs.direntName dent == "..") &&
+      is_dot_dir dent = (Nfs.direntName dent == "." ||
+                         Nfs.direntName dent == "..") &&
                         Nfs.direntFType3 dent == Nfs.NF3Dir
 
 test_create_and_remove_directory :: Nfs.ServerAddress ->
@@ -314,6 +315,10 @@ with_fh nfs ctx path mode action = bracket open Nfs.closeFh action
         Left s -> fail $ "failed to open " ++ path ++ ": " ++ s
         Right fh -> return fh
 
+test_write_and_read_file :: Nfs.ServerAddress ->
+                            Nfs.ExportName ->
+                            SyncNfs ->
+                            TestTree
 test_write_and_read_file srv xprt nfs =
   let pattern = BSC8.pack "of no particular importance"
       assertion = with_directory' nfs srv xprt "/" $ \ctx dir ->
@@ -335,6 +340,10 @@ test_write_and_read_file srv xprt nfs =
   in
    HU.testCase "Write to and read from file" assertion
 
+test_truncate_and_stat :: Nfs.ServerAddress ->
+                          Nfs.ExportName ->
+                          SyncNfs ->
+                          TestTree
 test_truncate_and_stat srv xprt nfs =
   let tsize = 12345
       assertion =  with_directory' nfs srv xprt "/" $ \ctx dir ->
@@ -359,6 +368,10 @@ test_truncate_and_stat srv xprt nfs =
   in
    HU.testCase "truncate and stat file" assertion
 
+test_ftruncate_and_fstat :: Nfs.ServerAddress ->
+                            Nfs.ExportName ->
+                            SyncNfs ->
+                            TestTree
 test_ftruncate_and_fstat srv xprt nfs =
   let tsize = 67890
       assertion =  with_directory' nfs srv xprt "/" $ \ctx dir ->
@@ -384,6 +397,10 @@ test_ftruncate_and_fstat srv xprt nfs =
   in
    HU.testCase "ftruncate and fstat file" assertion
 
+test_ftruncate_pwrite_and_pread_file :: Nfs.ServerAddress ->
+                                        Nfs.ExportName ->
+                                        SyncNfs ->
+                                        TestTree
 test_ftruncate_pwrite_and_pread_file srv xprt nfs =
   let pattern = BSC8.pack "not of any importance either"
       offset = 42
