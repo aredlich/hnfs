@@ -440,9 +440,7 @@ test_ftruncate_and_lseek srv xprt nfs =
               sret <- liftIO $ syncLSeek nfs ctx fh (-1) RelativeSeek
               case sret of
                 Left s -> right ()
-                Right pos -> liftIO $ HU.assertFailure $
-                             "could seek to pos " ++ show pos
-              return ()
+                Right pos -> left $ "could do a relative seek to pos " ++ show pos
             case res of
               Left s -> HU.assertFailure s
               Right () -> return ()
@@ -643,8 +641,7 @@ basic_tests = testGroup "Basic tests" [ test_init_and_destroy_context
                                       , test_get_fd
                                       , test_queue_length
                                       , test_get_read_max
-                                      , test_get_write_max
-                                      ]
+                                      , test_get_write_max ]
 
 advanced_tests :: [ (Nfs.ServerAddress -> Nfs.ExportName -> SyncNfs -> TestTree) ]
 advanced_tests = [ test_get_fd_mounted
@@ -696,8 +693,7 @@ main = let ings = includingOptions [ Option (Proxy :: Proxy ServerAddressOpt)
         askOption $ \(ExportNameOpt export) ->
         testGroup "HNfs tests" $ [ basic_tests
                                  , sync_tests server export
-                                 , async_tests server export
-                                 ]
+                                 , async_tests server export ]
 
 -- Local Variables: **
 -- mode: haskell **
