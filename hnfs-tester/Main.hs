@@ -27,6 +27,7 @@ import Foreign.C.Types
 import qualified GHC.Event as Ev
 
 import System.FilePath.Posix
+import System.IO
 import qualified System.Nfs as Nfs
 import System.Posix.IO (OpenMode (..))
 import System.Posix.Types
@@ -146,6 +147,11 @@ data SyncNfs = SyncNfs { syncMount :: Nfs.Context ->
                                           Nfs.Fh ->
                                           FileOffset ->
                                           IO (Either String ())
+                       , syncLSeek :: Nfs.Context ->
+                                      Nfs.Fh ->
+                                      FileOffset ->
+                                      SeekMode ->
+                                      IO (Either String FileOffset)
                        }
 
 with_context :: (Nfs.Context -> IO ()) -> IO ()
@@ -366,7 +372,7 @@ test_truncate_and_stat srv xprt nfs =
             Left s -> HU.assertFailure s
             Right () -> return ()
   in
-   HU.testCase "truncate and stat file" assertion
+   HU.testCase "Truncate and stat file" assertion
 
 test_ftruncate_and_fstat :: Nfs.ServerAddress ->
                             Nfs.ExportName ->
@@ -374,7 +380,7 @@ test_ftruncate_and_fstat :: Nfs.ServerAddress ->
                             TestTree
 test_ftruncate_and_fstat srv xprt nfs =
   let tsize = 67890
-      assertion =  with_directory' nfs srv xprt "/" $ \ctx dir ->
+      assertion = with_directory' nfs srv xprt "/" $ \ctx dir ->
         with_file nfs ctx dir $ \fpath -> do
           with_fh nfs ctx fpath WriteOnly $ \fh -> do
             res <- runEitherT $ do
@@ -395,7 +401,53 @@ test_ftruncate_and_fstat srv xprt nfs =
               Left s -> HU.assertFailure s
               Right () -> return ()
   in
-   HU.testCase "ftruncate and fstat file" assertion
+   HU.testCase "Ftruncate and fstat file" assertion
+
+test_ftruncate_and_lseek :: Nfs.ServerAddress ->
+                            Nfs.ExportName ->
+                            SyncNfs ->
+                            TestTree
+test_ftruncate_and_lseek srv xprt nfs =
+  let tsize = 13579
+      assertion = with_directory' nfs srv xprt "/" $ \ctx dir ->
+        with_file nfs ctx dir $ \fpath -> do
+          with_fh nfs ctx fpath WriteOnly $ \fh -> do
+            res <- runEitherT $ do
+              ret <- liftIO $ syncFTruncate nfs ctx fh $ fromIntegral tsize
+              case ret of
+                Left s -> left $ "ftruncate failed: " ++ s
+                Right _ -> right ()
+              sret <- liftIO $ syncLSeek nfs ctx fh 0 RelativeSeek
+              case sret of
+                Left s -> left $ "relative seek 0 failed: " ++ s
+                Right pos -> liftIO $ HU.assertEqual "expect file pos of 0"
+                             0 $ fromIntegral pos
+              sret <- liftIO $ syncLSeek nfs ctx fh 0 SeekFromEnd
+              case sret of
+                Left s -> left $ "seek 0 from end failed: " ++ s
+                Right pos -> liftIO $ HU.assertEqual "expect file pos end"
+                             tsize $ fromIntegral pos
+              sret <- liftIO $ syncLSeek nfs ctx fh 1 AbsoluteSeek
+              case sret of
+                Left s -> left $ "absolute seek to pos 1 failed: " ++ s
+                Right pos -> liftIO $ HU.assertEqual "expect file pos 1"
+                             1 $ fromIntegral pos
+              sret <- liftIO $ syncLSeek nfs ctx fh (-1) RelativeSeek
+              case sret of
+                Left s -> left $ "relative seek -1 failed: " ++ s
+                Right pos -> liftIO $ HU.assertEqual "expect file pos 0"
+                             0 $ fromIntegral pos
+              sret <- liftIO $ syncLSeek nfs ctx fh (-1) RelativeSeek
+              case sret of
+                Left s -> right ()
+                Right pos -> liftIO $ HU.assertFailure $
+                             "could seek to pos " ++ show pos
+              return ()
+            case res of
+              Left s -> HU.assertFailure s
+              Right () -> return ()
+  in
+   HU.testCase "Ftruncate and lseek in file" assertion
 
 test_ftruncate_pwrite_and_pread_file :: Nfs.ServerAddress ->
                                         Nfs.ExportName ->
@@ -547,7 +599,9 @@ sync_nfs = SyncNfs { syncMount = Nfs.mount
                    , syncWrite = \_ fh bs -> Nfs.write fh bs
                    , syncPWrite = \_ fh bs off -> Nfs.pwrite fh bs off
                    , syncFTruncate = \_ fh off -> Nfs.ftruncate fh off
-                   , syncFStat = \_ fh -> Nfs.fstat fh }
+                   , syncFStat = \_ fh -> Nfs.fstat fh
+                   , syncLSeek = \_ fh off mode -> Nfs.lseek fh off mode }
+
 
 async_nfs :: SyncNfs
 async_nfs = SyncNfs { syncMount = \ctx addr xprt ->
@@ -579,7 +633,9 @@ async_nfs = SyncNfs { syncMount = \ctx addr xprt ->
                     , syncFTruncate = \ctx fh off ->
                        sync_wrap ctx $ Nfs.ftruncateAsync fh off
                     , syncFStat = \ctx fh ->
-                       sync_wrap ctx $ Nfs.fstatAsync fh }
+                       sync_wrap ctx $ Nfs.fstatAsync fh
+                    , syncLSeek = \ctx fh off mode ->
+                       sync_wrap ctx $ Nfs.lseekAsync fh off mode }
 
 basic_tests :: TestTree
 basic_tests = testGroup "Basic tests" [ test_init_and_destroy_context
@@ -601,6 +657,7 @@ advanced_tests = [ test_get_fd_mounted
                  , test_write_and_read_file
                  , test_truncate_and_stat
                  , test_ftruncate_and_fstat
+                 , test_ftruncate_and_lseek
                  , test_ftruncate_pwrite_and_pread_file ]
 
 sync_tests :: Nfs.ServerAddress -> Nfs.ExportName -> TestTree
