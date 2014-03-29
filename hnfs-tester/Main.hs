@@ -277,42 +277,44 @@ test_create_and_remove_file srv xprt nfs =
   in
    HU.testCase "Create and remove file" assertion
 
+with_fh :: SyncNfs ->
+           Nfs.Context ->
+           FilePath ->
+           OpenMode ->
+           (Nfs.Fh -> IO ()) ->
+           IO ()
+with_fh nfs ctx path mode action = bracket open Nfs.closeFh action
+  where
+    open :: IO Nfs.Fh
+    open = do
+      ret <- syncOpen nfs ctx path mode
+      case ret of
+        Left s -> fail $ "failed to open " ++ path ++ ": " ++ s
+        Right fh -> return fh
+
 test_write_and_read_file srv xprt nfs =
   let pattern = BSC8.pack "of no particular importance"
       assertion = with_directory' nfs srv xprt "/" $ \ctx dir ->
         with_file nfs ctx dir $ \fpath -> do
-          res <- runEitherT $ do
-            ret <- liftIO $ syncOpen nfs ctx fpath WriteOnly
-            fh <- case ret of
-              Left s -> left $ "opening for write failed: " ++ s
-              Right fh' -> return fh'
+          with_fh nfs ctx fpath WriteOnly $ \fh -> do
             wret <- liftIO $ syncWrite nfs ctx fh pattern
             case wret of
-              Left s -> left $ "write failed: " ++ s
-              Right size -> liftIO $ HU.assertEqual
+              Left s -> HU.assertFailure $ "write failed: " ++ s
+              Right size -> HU.assertEqual
                             "pattern size bytes should've been written"
                             (BS.length pattern) (fromIntegral size)
-            liftIO $ Nfs.closeFh fh
-            ret <- liftIO $ syncOpen nfs ctx fpath ReadOnly
-            fh <- case ret of
-              Left s -> left $ "opening for read failed: " ++ s
-              Right fh' -> return fh'
-            rret <- liftIO $ syncRead nfs ctx fh (fromIntegral $ BS.length pattern)
+          with_fh nfs ctx fpath ReadOnly $ \fh -> do
+            rret <- syncRead nfs ctx fh (fromIntegral $ BS.length pattern)
             case rret of
-              Left s -> left $ "read failed: " ++ s
-              Right bs -> liftIO $ HU.assertEqual
+              Left s -> HU.assertFailure $ "read failed: " ++ s
+              Right bs -> HU.assertEqual
                           "read pattern should match written pattern"
                           pattern bs
-            liftIO $ Nfs.closeFh fh
-            right ()
-          case res of
-            Left s -> HU.assertFailure $ "test failure: " ++ s
-            Right () -> return ()
   in
    HU.testCase "Write to and read from file" assertion
 
-test_mount_wrong_server :: SyncNfs -> TestTree
-test_mount_wrong_server nfs =
+test_mount_wrong_server :: Nfs.ServerAddress -> Nfs.ExportName -> SyncNfs -> TestTree
+test_mount_wrong_server _ _ nfs =
   let assertion = with_context $ \ctx -> do
         uuid <- return.toString =<< nextRandom
         ret <- mount nfs ctx uuid uuid
@@ -323,8 +325,8 @@ test_mount_wrong_server nfs =
   in
    HU.testCase "Mount wrong server" assertion
 
-test_mount_wrong_export :: Nfs.ServerAddress -> SyncNfs -> TestTree
-test_mount_wrong_export srv nfs =
+test_mount_wrong_export :: Nfs.ServerAddress -> Nfs.ExportName -> SyncNfs -> TestTree
+test_mount_wrong_export srv _ nfs =
   let assertion = with_context $ \ctx -> do
         uuid <- return.toString =<< nextRandom
         ret <- mount nfs ctx srv uuid
@@ -454,24 +456,23 @@ basic_tests = testGroup "Basic tests" [ test_init_and_destroy_context
                                       , test_get_write_max
                                       ]
 
-advanced_tests :: Nfs.ServerAddress -> Nfs.ExportName -> [ (SyncNfs -> TestTree) ]
-advanced_tests srv xprt = [ test_get_fd_mounted srv xprt
-                          , test_mount_ok srv xprt
-                          , test_mount_wrong_export srv
-                          , test_mount_wrong_server
-                          , test_create_and_remove_directory srv xprt
-                          , test_list_empty_directory srv xprt
-                          , test_create_and_remove_file srv xprt
-                          , test_write_and_read_file srv xprt
-                          ]
+advanced_tests :: [ (Nfs.ServerAddress -> Nfs.ExportName -> SyncNfs -> TestTree) ]
+advanced_tests = [ test_get_fd_mounted
+                 , test_mount_ok
+                 , test_mount_wrong_export
+                 , test_mount_wrong_server
+                 , test_create_and_remove_directory
+                 , test_list_empty_directory
+                 , test_create_and_remove_file
+                 , test_write_and_read_file ]
 
 sync_tests :: Nfs.ServerAddress -> Nfs.ExportName -> TestTree
 sync_tests srv xprt = testGroup "Synchronous interface tests" $
-             fmap (\test -> test sync_nfs) $ advanced_tests srv xprt
+             fmap (\test -> test srv xprt sync_nfs) $ advanced_tests
 
 async_tests :: Nfs.ServerAddress -> Nfs.ExportName -> TestTree
 async_tests srv xprt = testGroup "Asynchronous interface tests" $
-              fmap (\test -> test async_nfs) $ advanced_tests srv xprt
+              fmap (\test -> test srv xprt async_nfs) $ advanced_tests
 
 -- TODO: make this fail with a nicer error message if server / export are not
 -- specified
