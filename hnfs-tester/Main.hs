@@ -321,6 +321,13 @@ with_fh nfs ctx path mode action = bracket open Nfs.closeFh action
         Left s -> fail $ "failed to open " ++ path ++ ": " ++ s
         Right fh -> return fh
 
+check_pos :: SyncNfs -> Nfs.Context -> Nfs.Fh -> FileOffset -> IO ()
+check_pos nfs ctx fh exp = do
+  sret <- syncLSeek nfs ctx fh 0 RelativeSeek
+  case sret of
+    Left s -> HU.assertFailure $ "failed to lseek to relative pos 0: " ++ s
+    Right pos -> HU.assertEqual ("expected file position " ++ show exp) exp pos
+
 test_write_and_read_file :: Nfs.ServerAddress ->
                             Nfs.ExportName ->
                             SyncNfs ->
@@ -330,19 +337,25 @@ test_write_and_read_file srv xprt nfs =
       assertion = with_directory' nfs srv xprt "/" $ \ctx dir ->
         with_file nfs ctx dir $ \fpath -> do
           with_fh nfs ctx fpath WriteOnly $ \fh -> do
+            check_pos nfs ctx fh 0
             wret <- syncWrite nfs ctx fh pattern
             case wret of
               Left s -> HU.assertFailure $ "write failed: " ++ s
-              Right size -> HU.assertEqual
-                            "pattern size bytes should've been written"
-                            (BS.length pattern) (fromIntegral size)
+              Right size -> do
+                HU.assertEqual
+                  "pattern size bytes should've been written"
+                  (BS.length pattern) (fromIntegral size)
+                check_pos nfs ctx fh (fromIntegral $ BS.length pattern)
           with_fh nfs ctx fpath ReadOnly $ \fh -> do
+            check_pos nfs ctx fh 0
             rret <- syncRead nfs ctx fh (fromIntegral $ BS.length pattern)
             case rret of
               Left s -> HU.assertFailure $ "read failed: " ++ s
-              Right bs -> HU.assertEqual
-                          "read pattern should match written pattern"
-                          pattern bs
+              Right bs -> do
+                HU.assertEqual
+                  "read pattern should match written pattern"
+                  pattern bs
+                check_pos nfs ctx fh (fromIntegral $ BS.length pattern)
   in
    HU.testCase "Write to and read from file" assertion
 
@@ -417,11 +430,7 @@ test_ftruncate_and_lseek srv xprt nfs =
               case ret of
                 Left s -> left $ "ftruncate failed: " ++ s
                 Right _ -> right ()
-              sret <- liftIO $ syncLSeek nfs ctx fh 0 RelativeSeek
-              case sret of
-                Left s -> left $ "relative seek 0 failed: " ++ s
-                Right pos -> liftIO $ HU.assertEqual "expect file pos of 0"
-                             0 $ fromIntegral pos
+              liftIO $ check_pos nfs ctx fh 0
               sret <- liftIO $ syncLSeek nfs ctx fh 0 SeekFromEnd
               case sret of
                 Left s -> left $ "seek 0 from end failed: " ++ s
@@ -441,6 +450,10 @@ test_ftruncate_and_lseek srv xprt nfs =
               case sret of
                 Left s -> right ()
                 Right pos -> left $ "could do a relative seek to pos " ++ show pos
+              sret <- liftIO $ syncLSeek nfs ctx fh (-(tsize + 1)) SeekFromEnd
+              case sret of
+                Left s -> right ()
+                Right pos -> left $ "could seek to -(tsize + 1) from end to pos " ++ show pos
             case res of
               Left s -> HU.assertFailure s
               Right () -> return ()
@@ -469,6 +482,7 @@ test_ftruncate_pwrite_and_pread_file srv xprt nfs =
                 Right size -> liftIO $ HU.assertEqual
                               "pattern size bytes should've been written"
                              (BS.length pattern) (fromIntegral size)
+              liftIO $ check_pos nfs ctx fh 0
               rret <- liftIO $ syncPRead nfs ctx fh (fromIntegral $ BS.length pattern)
                       $ fromIntegral offset
               case rret of
@@ -476,7 +490,8 @@ test_ftruncate_pwrite_and_pread_file srv xprt nfs =
                 Right bs -> do
                   liftIO $ HU.assertEqual "read pattern should match written pattern"
                     pattern bs
-                  right ()
+              liftIO $ check_pos nfs ctx fh 0
+              right ()
             case res of
               Left s -> HU.assertFailure s
               Right _ -> return ()
