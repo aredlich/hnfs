@@ -33,7 +33,7 @@ it could lead to data loss.
 
 ## Known Issues
 
-* The asynchronous tests sporadically fail / hang
+* The asynchronous tests sporadically fail / hang - don't use it for now.
 
 ## TODO
 
@@ -41,6 +41,7 @@ it could lead to data loss.
 * Documentation
 * Revisit error handling - use exceptions instead of / together with Either?
 * Support for conduits
+* Make tests more fine grained
 * More tests
 * Split up into Nfs.Base, Nfs.Sync and Nfs.Async?
 
