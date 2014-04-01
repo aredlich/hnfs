@@ -283,9 +283,7 @@ maybe_error ptr
                            POLLHUP as PollHup,
                            POLLNVAL as PollNval } deriving (Eq, Show) #}
 
--- TODO:
--- * a nicer "show"
--- * push to a higher level API?
+-- Push to a higher level API?
 newtype Event = Event Int deriving (Eq, Show)
 
 eventNone :: Event
@@ -434,7 +432,7 @@ data Dir_
 {# pointer* nfsdir as DirPtr -> Dir_ #}
 
 {# fun nfs_closedir as close_dir { with_context* `Context'
-                                , id `DirPtr' } -> `()' #}
+                                 , id `DirPtr' } -> `()' #}
 
 data Dir = Dir !(MVar (Maybe (Context, DirPtr)))
 
@@ -526,8 +524,6 @@ instance Storable TimeVal where
   peek = peek_timeval_ptr
   poke = poke_timeval_ptr
 
--- TODO:
--- * {a,c,m}time
 data Dirent = Dirent { direntName :: String
                      , direntInode :: FileID
                      , direntFType3 :: FType3
@@ -1349,12 +1345,6 @@ peek_stat_ptr ptr = do
   size <- {# get stat->st_size #} ptr
   blksize <- {# get stat->st_blksize #} ptr
   blocks <- {# get stat->st_blocks #} ptr
-
-  -- TODO:
-  -- src/System/Nfs.chs:975: (column 25) [ERROR]  >>> Unknown member name!
-  -- The structure has no member called `st_atime'.  The structure is defined at
-  -- ("/usr/include/x86_64-linux-gnu/bits/stat.h",46,1).
-
   atime <- peek $ ptr `plusPtr` {# offsetof stat->st_atim #}
   mtime <- peek $ ptr `plusPtr` {# offsetof stat->st_mtim #}
   ctime <- peek $ ptr `plusPtr` {# offsetof stat->st_ctim #}
