@@ -33,11 +33,12 @@ it could lead to data loss.
 
 ## Known Issues
 
-* The asynchronous tests sporadically fail / hang - don't use it for now.
+* The asynchronous tests succeed but print the following to stderr:
+   "hnfs-tester: ioManagerDie: write: Bad file descriptor"
+  . This seems to be caused by https://ghc.haskell.org/trac/ghc/ticket/5443 .
 
 ## TODO
 
-* Investigate and fix spurious hangs / failures of the asynchronous tests
 * Documentation
 * Revisit error handling - use exceptions instead of / together with Either?
 * Support for conduits

@@ -15,7 +15,6 @@ import Control.Monad.Trans.Either
 
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC8
-import Data.IORef
 import Data.Monoid
 import Data.Typeable (Typeable)
 import Data.Proxy
@@ -53,43 +52,41 @@ ev_to_nfs_event ev
 -- Retrieving and registering the context's fd once is *not* sufficient -
 -- we need to constantly re-register it as libnfs closes / reopens it e.g.
 -- during mount.
--- TODO: get rid of the IORef
-ev_callback :: Nfs.Context -> Ev.EventManager -> IORef (Maybe Ev.FdKey) -> Ev.FdKey -> Ev.Event -> IO ()
-ev_callback ctx mgr ref fdkey ev = do
+ev_callback :: Nfs.Context -> Ev.EventManager-> Ev.FdKey -> Ev.Event -> IO ()
+ev_callback ctx mgr fdkey ev = do
   Ev.unregisterFd mgr fdkey
   Nfs.service ctx $ ev_to_nfs_event ev
-  register_fd ctx mgr ref
+  register_fd ctx mgr
 
-register_fd :: Nfs.Context -> Ev.EventManager -> IORef (Maybe Ev.FdKey) -> IO ()
-register_fd ctx mgr ref = do
+register_fd :: Nfs.Context -> Ev.EventManager -> IO ()
+register_fd ctx mgr = do
   fd <- Nfs.getFd ctx
   evts <- Nfs.whichEvents ctx
-  key <- Ev.registerFd mgr (ev_callback ctx mgr ref) fd $ nfs_to_ev_event evts
-  writeIORef ref $ Just key
+  _ <- Ev.registerFd mgr (ev_callback ctx mgr) fd $ nfs_to_ev_event evts
+  return ()
 
+-- This spews "ioManagerDie: write: Bad file descriptor" -
+-- https://ghc.haskell.org/trac/ghc/ticket/5443
 sync_wrap :: Nfs.Context ->
              (Nfs.Callback a -> IO (Either String ())) ->
              IO (Either String a)
 sync_wrap ctx async_action = runEitherT $ do
-  mmgr <- liftIO Ev.getSystemEventManager
-  mgr <- case mmgr of
-    Nothing -> left "failed to get system event manager"
-    Just m -> right m
+  mgr <- liftIO Ev.new
   mv <- liftIO newEmptyMVar
-  ret <- liftIO $ async_action $ \ret' -> do
-    putMVar mv ret'
+  ret <- liftIO $ async_action $ callback mv mgr
   case ret of
     Left s -> left $ "failed to invoke async action: " ++ s
     Right () -> right ()
-  ref <- liftIO $ newIORef Nothing
-  liftIO $ register_fd ctx mgr ref
-  ret'' <- liftIO $ takeMVar mv
-  mkey <- liftIO $ readIORef ref
-  key <- case mkey of
-    Nothing -> left "failed to get fdkey to unregister"
-    Just k -> right k
-  liftIO $ Ev.unregisterFd mgr key
-  hoistEither ret''
+  liftIO $ register_fd ctx mgr
+  liftIO $ Ev.loop mgr
+  (liftIO $ takeMVar mv) >>= hoistEither
+  where
+    callback :: MVar (Either String a) ->
+                Ev.EventManager ->
+                Either String a -> IO ()
+    callback mv' mgr' ret' = do
+      putMVar mv' ret'
+      Ev.shutdown mgr'
 
 data SyncNfs = SyncNfs { syncMount :: Nfs.Context ->
                                       Nfs.ServerAddress ->
