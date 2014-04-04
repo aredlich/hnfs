@@ -12,9 +12,13 @@ import Control.Concurrent.MVar
 import Control.Exception
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Either
+import Control.Monad.Trans.Resource (runResourceT)
 
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC8
+import Data.Conduit
+import qualified Data.Conduit.List as ListC
+import qualified Data.Conduit.Nfs as NfsC
 import Data.Monoid
 import Data.Typeable (Typeable)
 import Data.Proxy
@@ -336,24 +340,10 @@ test_write_and_read_file srv xprt nfs =
         with_file nfs ctx dir $ \fpath -> do
           with_fh nfs ctx fpath WriteOnly $ \fh -> do
             check_pos nfs ctx fh 0 "before write"
-            wret <- syncWrite nfs ctx fh pattern
-            case wret of
-              Left s -> HU.assertFailure $ "write failed: " ++ s
-              Right size -> do
-                HU.assertEqual
-                  "pattern size bytes should've been written"
-                  (BS.length pattern) (fromIntegral size)
-                check_pos nfs ctx fh (fromIntegral $ BS.length pattern) "after write"
+            check_write nfs ctx fh pattern
           with_fh nfs ctx fpath ReadOnly $ \fh -> do
             check_pos nfs ctx fh 0 "before read"
-            rret <- syncRead nfs ctx fh (fromIntegral $ BS.length pattern)
-            case rret of
-              Left s -> HU.assertFailure $ "read failed: " ++ s
-              Right bs -> do
-                HU.assertEqual
-                  "read pattern should match written pattern"
-                  pattern bs
-                check_pos nfs ctx fh (fromIntegral $ BS.length pattern) "after read"
+            check_read nfs ctx fh pattern
   in
    HU.testCase "Write to and read from file" assertion
 
@@ -458,6 +448,70 @@ test_ftruncate_and_lseek srv xprt nfs =
   in
    HU.testCase "Ftruncate and lseek in file" assertion
 
+check_pread :: SyncNfs ->
+               Nfs.Context ->
+               Nfs.Fh ->
+               FileOffset ->
+               BS.ByteString ->
+               IO ()
+check_pread nfs ctx fh off pattern = do
+  pos <- Nfs.getCurrentOffset fh
+  rret <- syncPRead nfs ctx fh (fromIntegral $ BS.length pattern) (fromIntegral off)
+  case rret of
+    Left s -> HU.assertFailure $ "pread failed: " ++ s
+    Right bs -> HU.assertEqual "read data should match expectation" pattern bs
+  pos' <- Nfs.getCurrentOffset fh
+  HU.assertEqual "file position must not have changed" pos pos'
+
+check_read :: SyncNfs ->
+              Nfs.Context ->
+              Nfs.Fh ->
+              BS.ByteString ->
+              IO ()
+check_read nfs ctx fh pattern = do
+  let size = (fromIntegral $ BS.length pattern)
+  pos <- Nfs.getCurrentOffset fh
+  rret <- syncRead nfs ctx fh size
+  case rret of
+    Left s -> HU.assertFailure $ "read failed: " ++ s
+    Right bs -> HU.assertEqual "read data should match expectation" pattern bs
+  pos' <- Nfs.getCurrentOffset fh
+  HU.assertEqual "file position must have changed" (pos + fromIntegral size) pos'
+
+check_pwrite :: SyncNfs ->
+                Nfs.Context ->
+                Nfs.Fh ->
+                FileOffset ->
+                BS.ByteString ->
+                IO ()
+check_pwrite nfs ctx fh off pattern = do
+  pos <- Nfs.getCurrentOffset fh
+  wret <- syncPWrite nfs ctx fh pattern (fromIntegral off)
+  case wret of
+    Left s -> HU.assertFailure $ "pwrite failed: " ++ s
+    Right size -> HU.assertEqual
+                  "write size should match expectation"
+                  (BS.length pattern) (fromIntegral size)
+  pos' <- Nfs.getCurrentOffset fh
+  HU.assertEqual "file position must not have changed" pos pos'
+
+check_write :: SyncNfs ->
+               Nfs.Context ->
+               Nfs.Fh ->
+               BS.ByteString ->
+               IO ()
+check_write nfs ctx fh pattern = do
+  let size = (fromIntegral $ BS.length pattern)
+  pos <- Nfs.getCurrentOffset fh
+  wret <- syncWrite nfs ctx fh pattern
+  case wret of
+    Left s -> HU.assertFailure $ "write failed: " ++ s
+    Right size' -> HU.assertEqual
+                  "write size should match expectation"
+                  size size'
+  pos' <- Nfs.getCurrentOffset fh
+  HU.assertEqual "file position must have changed" (pos + fromIntegral size) pos'
+
 test_ftruncate_pwrite_and_pread_file :: Nfs.ServerAddress ->
                                         Nfs.ExportName ->
                                         SyncNfs ->
@@ -474,21 +528,8 @@ test_ftruncate_pwrite_and_pread_file srv xprt nfs =
               case ret of
                 Left s -> left $ "ftruncate failed: " ++ s
                 Right _ -> right ()
-              wret <- liftIO $ syncPWrite nfs ctx fh pattern $ fromIntegral offset
-              case wret of
-                Left s -> left $ "pwrite failed: " ++ s
-                Right size -> liftIO $ HU.assertEqual
-                              "pattern size bytes should've been written"
-                             (BS.length pattern) (fromIntegral size)
-              liftIO $ check_pos nfs ctx fh 0 "after pwrite"
-              rret <- liftIO $ syncPRead nfs ctx fh (fromIntegral $ BS.length pattern)
-                      $ fromIntegral offset
-              case rret of
-                Left s -> left $ "pread failed: " ++ s
-                Right bs -> do
-                  liftIO $ HU.assertEqual "read pattern should match written pattern"
-                    pattern bs
-              liftIO $ check_pos nfs ctx fh 0 "after pread"
+              liftIO $ check_pwrite nfs ctx fh (fromIntegral offset) pattern
+              liftIO $ check_pread nfs ctx fh (fromIntegral offset) pattern
               right ()
             case res of
               Left s -> HU.assertFailure s
@@ -595,6 +636,92 @@ test_get_write_max =
   in
    HU.testCase "Get write max from context" assertion
 
+test_directory_source :: Nfs.ServerAddress -> Nfs.ExportName -> SyncNfs -> TestTree
+test_directory_source addr xprt nfs =
+  let assertion = with_directory' nfs addr xprt "/" $ \ctx parent ->
+        with_directory' nfs addr xprt parent $ \ctx child_dir ->
+          with_file nfs ctx parent $ \child_file -> do
+            l <- runResourceT $ NfsC.sourceDirectory ctx parent $$ ListC.consume
+            HU.assertEqual "unexpected directory contents" 2 $ length l
+            HU.assertBool "child file must be present in output" $
+              any (\e -> e == parent </> child_file) l
+            HU.assertBool "child dir must be present in output" $
+              any (\e -> e == parent </> child_dir) l
+  in
+   HU.testCase "SourceDirectory conduit" assertion
+
+test_fh_source_and_sink :: Nfs.ServerAddress ->
+                           Nfs.ExportName ->
+                           SyncNfs ->
+                           TestTree
+test_fh_source_and_sink addr xprt nfs =
+  let pattern = BSC8.pack "some arbitrary, utterly unremarkable text"
+      assertion = with_directory' nfs addr xprt "/" $ \ctx dir ->
+        with_file nfs ctx dir $ \source ->
+          with_fh nfs ctx source ReadWrite $ \fh -> do
+            check_pwrite nfs ctx fh 0 pattern
+            with_file nfs ctx dir $ \sink ->
+              with_fh nfs ctx sink ReadWrite $ \fh2 -> do
+                runResourceT $ NfsC.sourceFh fh $$ NfsC.sinkFh fh2
+                check_pread nfs ctx fh2 0 pattern
+  in
+   HU.testCase "Conduit source and sink - Fh" assertion
+
+test_file_path_source_and_sink :: Nfs.ServerAddress ->
+                                  Nfs.ExportName ->
+                                  SyncNfs ->
+                                  TestTree
+test_file_path_source_and_sink addr xprt nfs =
+  let pattern = BSC8.pack "some dull string"
+      assertion = with_directory' nfs addr xprt "/" $ \ctx dir ->
+        with_file nfs ctx dir $ \source ->
+          with_fh nfs ctx source ReadWrite $ \fh -> do
+            check_pwrite nfs ctx fh 0 pattern
+            with_file nfs ctx dir $ \sink -> do
+              runResourceT $ NfsC.sourceFile ctx source $$ NfsC.sinkFile ctx sink
+              with_fh nfs ctx sink ReadWrite $ \fh2 ->
+                check_pread nfs ctx fh2 0 pattern
+  in
+   HU.testCase "Conduit source and sink - FilePath" assertion
+
+test_file_path_range_source_and_sink :: Nfs.ServerAddress ->
+                                        Nfs.ExportName ->
+                                        SyncNfs ->
+                                        TestTree
+test_file_path_range_source_and_sink addr xprt nfs =
+  let pattern1 = BSC8.pack "some"
+      size1 = BS.length pattern1
+      pattern2 = BSC8.pack "pointless"
+      size2 = BS.length pattern2
+      pattern3 = BSC8.pack "text"
+      size3 = BS.length pattern3
+      assertion = with_directory' nfs addr xprt "/" $ \ctx dir ->
+        with_file nfs ctx dir $ \source ->
+          with_fh nfs ctx source ReadWrite $ \fh -> do
+            check_write nfs ctx fh pattern1
+            check_write nfs ctx fh pattern2
+            check_write nfs ctx fh pattern3
+            with_file nfs ctx dir $ \sink1 ->
+              with_file nfs ctx dir $ \sink2 ->
+                with_file nfs ctx dir $ \sink3 -> do
+                  runResourceT $
+                    NfsC.sourceFileRange ctx source Nothing (Just $ fromIntegral size1) $$
+                    NfsC.sinkFile ctx sink1
+                  runResourceT $
+                    NfsC.sourceFileRange ctx source (Just $ fromIntegral size1) (Just $ fromIntegral size2) $$
+                    NfsC.sinkFile ctx sink2
+                  runResourceT $
+                    NfsC.sourceFileRange ctx source (Just $ fromIntegral (size1 + size2)) Nothing $$
+                    NfsC.sinkFile ctx sink3
+                  with_fh nfs ctx sink1 ReadOnly $ \fh' ->
+                    check_read nfs ctx fh' pattern1
+                  with_fh nfs ctx sink2 ReadOnly $ \fh' ->
+                    check_read nfs ctx fh' pattern2
+                  with_fh nfs ctx sink3 ReadOnly $ \fh' ->
+                    check_read nfs ctx fh' pattern3
+  in
+   HU.testCase "Conduit source and sink - FilePath" assertion
+
 sync_nfs :: SyncNfs
 sync_nfs = SyncNfs { syncMount = Nfs.mount
                    , syncOpenDir = Nfs.openDir
@@ -612,7 +739,6 @@ sync_nfs = SyncNfs { syncMount = Nfs.mount
                    , syncFTruncate = \_ fh off -> Nfs.ftruncate fh off
                    , syncFStat = \_ fh -> Nfs.fstat fh
                    , syncLSeek = \_ fh off mode -> Nfs.lseek fh off mode }
-
 
 async_nfs :: SyncNfs
 async_nfs = SyncNfs { syncMount = \ctx addr xprt ->
@@ -678,6 +804,16 @@ async_tests :: Nfs.ServerAddress -> Nfs.ExportName -> TestTree
 async_tests srv xprt = testGroup "Asynchronous interface tests" $
               fmap (\test -> test srv xprt async_nfs) $ advanced_tests
 
+conduit_tests' :: [ (Nfs.ServerAddress -> Nfs.ExportName -> SyncNfs -> TestTree) ]
+conduit_tests' = [ test_directory_source
+                 , test_fh_source_and_sink
+                 , test_file_path_source_and_sink
+                 , test_file_path_range_source_and_sink ]
+
+conduit_tests :: Nfs.ServerAddress -> Nfs.ExportName -> TestTree
+conduit_tests srv xprt = testGroup "Nfs conduit tests" $
+                         fmap (\test -> test srv xprt sync_nfs) $ conduit_tests'
+
 -- TODO: make this fail with a nicer error message if server / export are not
 -- specified
 newtype ServerAddressOpt = ServerAddressOpt Nfs.ServerAddress
@@ -706,7 +842,8 @@ main = let ings = includingOptions [ Option (Proxy :: Proxy ServerAddressOpt)
         askOption $ \(ExportNameOpt export) ->
         testGroup "HNfs tests" $ [ basic_tests
                                  , sync_tests server export
-                                 , async_tests server export ]
+                                 , async_tests server export
+                                 , conduit_tests server export ]
 
 -- Local Variables: **
 -- mode: haskell **
