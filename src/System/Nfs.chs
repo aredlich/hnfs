@@ -569,6 +569,7 @@ instance Storable TimeVal where
   peek = peek_timeval_ptr
   poke = poke_timeval_ptr
 
+-- | Directory entry.
 data Dirent = Dirent { direntName :: String
                      , direntInode :: FileID
                      , direntFType3 :: FType3
@@ -641,8 +642,10 @@ readDir dir = with_dir dir readdir
                                       , id `FunPtr CCallback'
                                       , id `Ptr ()' } -> `CInt' id #}
 
+-- | Type of the mkDirAsync callback.
 type MkDirCallback = NoDataCallback
 
+-- | Asynchronously create a directory.
 mkDirAsync :: Context -> FilePath -> MkDirCallback -> IO (Either String ())
 mkDirAsync ctx path cb =
   wrap_action ctx (mkdir_async ctx path) cb extract_nothing
@@ -651,6 +654,7 @@ mkDirAsync ctx path cb =
                                , withCString* `FilePath'
                                } -> `CInt' id #}
 
+-- | Synchronously create a directory.
 mkDir :: Context -> FilePath -> IO (Either String ())
 mkDir ctx path = handle_ret_error ctx =<< mkdir_sync ctx path
 
@@ -659,8 +663,10 @@ mkDir ctx path = handle_ret_error ctx =<< mkdir_sync ctx path
                                       , id `FunPtr CCallback'
                                       , id `Ptr ()' } -> `CInt' id #}
 
+-- | Type of the rmDirAsync callback.
 type RmDirCallback = NoDataCallback
 
+-- | Asynchronously remove a directory.
 rmDirAsync :: Context -> FilePath -> RmDirCallback -> IO (Either String ())
 rmDirAsync ctx path cb =
   wrap_action ctx (rmdir_async ctx path) cb extract_nothing
@@ -668,9 +674,11 @@ rmDirAsync ctx path cb =
 {# fun nfs_rmdir as rmdir_sync { with_context* `Context'
                                , withCString* `FilePath' } -> `CInt' id #}
 
+-- | Synchronously remove a directory.
 rmDir :: Context -> FilePath -> IO (Either String ())
 rmDir ctx path = handle_ret_error ctx =<< rmdir_sync ctx path
 
+-- | Type of the truncateAsync callback.
 type TruncateCallback = NoDataCallback
 
 {#fun nfs_truncate_async as truncate_async { with_context* `Context'
@@ -679,6 +687,7 @@ type TruncateCallback = NoDataCallback
                                            , id `FunPtr CCallback'
                                            , id `Ptr ()'} -> `CInt' id #}
 
+-- | Asynchronously truncate a file.
 truncateAsync :: Context ->
                  FilePath ->
                  FileOffset ->
@@ -691,9 +700,11 @@ truncateAsync ctx path len cb =
                                     , withCString* `FilePath'
                                     , fromIntegral `FileOffset' } -> `CInt' id #}
 
+-- | Synchronously truncate a file.
 truncate :: Context -> FilePath -> FileOffset -> IO (Either String ())
 truncate ctx path off = handle_ret_error ctx =<< truncate_sync ctx path off
 
+-- | Type of the renameAsync callback.
 type RenameCallback = NoDataCallback
 
 {# fun nfs_rename_async as rename_async { with_context* `Context'
@@ -702,6 +713,7 @@ type RenameCallback = NoDataCallback
                                         , id `FunPtr CCallback'
                                         , id `Ptr ()' } -> `CInt' id #}
 
+-- | Asynchronously rename a file or directory.
 renameAsync :: Context ->
                FilePath ->
                FilePath ->
@@ -714,9 +726,11 @@ renameAsync ctx from to cb =
                                  , withCString* `FilePath'
                                  , withCString* `FilePath' } -> `CInt' id #}
 
+-- | Synchronously rename a file or directory.
 rename :: Context -> FilePath -> FilePath -> IO (Either String ())
 rename ctx from to = handle_ret_error ctx =<< rename_sync ctx from to
 
+-- | Type of the symlinkAsync callback.
 type SymlinkCallback = NoDataCallback
 
 {# fun nfs_symlink_async as symlink_async { with_context* `Context'
@@ -725,6 +739,7 @@ type SymlinkCallback = NoDataCallback
                                           , id `FunPtr CCallback'
                                           , id `Ptr ()' } -> `CInt' id #}
 
+-- | Asynchronously create a symbolic link.
 symlinkAsync :: Context ->
                 FilePath ->
                 FilePath ->
@@ -737,9 +752,11 @@ symlinkAsync ctx from to cb =
                                    , withCString* `FilePath'
                                    , withCString* `FilePath' } -> `CInt' id #}
 
+-- | Synchronously create a symbolic link.
 symlink :: Context -> FilePath -> FilePath -> IO (Either String ())
 symlink ctx from to = handle_ret_error ctx =<< symlink_sync ctx from to
 
+-- | Type of the linkAsync callback.
 type LinkCallback = NoDataCallback
 
 {# fun nfs_link_async as link_async { with_context* `Context'
@@ -748,6 +765,7 @@ type LinkCallback = NoDataCallback
                                     , id `FunPtr CCallback'
                                     , id `Ptr ()' } -> `CInt' id #}
 
+-- | Asynchronously create a hard link.
 linkAsync :: Context ->
              FilePath ->
              FilePath ->
@@ -760,6 +778,7 @@ linkAsync ctx from to cb =
                                    , withCString* `FilePath'
                                    , withCString* `FilePath' } -> `CInt' id #}
 
+-- | Synchronously create a hard link.
 link :: Context -> FilePath -> FilePath -> IO (Either String ())
 link ctx from to = handle_ret_error ctx =<< link_sync ctx from to
 
@@ -774,6 +793,9 @@ data Fh_
 {# fun nfs_close as close_fh { with_context* `Context'
                              , id `FhPtr' } -> `()' #}
 
+-- | Opaque handle representing an open file. Should be released explicitly with
+-- @closeFh@ so its resources can be reclaimed. Otherwise it will be finalized by
+-- the garbage collector at an unspecified point in time.
 data Fh = Fh !(MVar (Maybe (Context, FhPtr)))
 
 mk_fh :: Context -> FhPtr -> IO Fh
@@ -787,9 +809,11 @@ finalize_fh_mvar mv = modifyMVar_ mv $ \mpair -> case mpair of
   Just (ctx, ptr) -> close_fh ctx ptr >> return Nothing
   Nothing -> return Nothing
 
+-- | Explicitly close a @Fh@.
 closeFh :: Fh -> IO ()
 closeFh (Fh mv) = finalize_fh_mvar mv
 
+-- | Type of the openAsync and creatAsync callback.
 type OpenFileCallback = Callback Fh
 
 extract_fh :: Context -> DataExtractor Fh
@@ -806,6 +830,7 @@ open_mode_to_cint ReadWrite = 2
                                       , id `FunPtr CCallback'
                                       , id `Ptr ()' } -> `CInt' id #}
 
+-- | Asynchronously create and open a new file.
 creatAsync :: Context ->
               FilePath ->
               OpenMode ->
@@ -819,6 +844,7 @@ creatAsync ctx path mode cb =
                                , open_mode_to_cint `OpenMode'
                                , alloca- `FhPtr' peek* } -> `CInt' id #}
 
+-- | Synchronously create and open a new file.
 creat :: Context -> FilePath -> OpenMode -> IO (Either String Fh)
 creat ctx path mode = handle_ret_error'' ctx (mk_fh ctx) =<< creat_sync ctx path mode
 
@@ -828,6 +854,7 @@ creat ctx path mode = handle_ret_error'' ctx (mk_fh ctx) =<< creat_sync ctx path
                                     , id `FunPtr CCallback'
                                     , id `Ptr ()' } -> `CInt' id #}
 
+-- | Asynchronously open a file.
 openAsync :: Context ->
              FilePath ->
              OpenMode ->
@@ -841,9 +868,11 @@ openAsync ctx path mode cb =
                                , open_mode_to_cint `OpenMode'
                                , alloca- `FhPtr' peek* } -> `CInt' id #}
 
+-- | Synchronously open a file.
 open :: Context -> FilePath -> OpenMode -> IO (Either String Fh)
 open ctx path mode = handle_ret_error'' ctx (mk_fh ctx) =<< open_sync ctx path mode
 
+-- | Type of the writeAsync and pwriteAsync callback.
 type WriteCallback = Callback CSize
 
 extract_write_size :: DataExtractor CSize
@@ -865,6 +894,9 @@ with_fh (Fh mv) act = withMVar mv $ \mpair -> case mpair of
                                       , id `FunPtr CCallback'
                                       , id `Ptr ()' } -> `CInt' id #}
 
+-- | Asynchronously write binary data to the open file represented by @Fh@ starting
+-- at the current file position. The file position is advanced by the number of
+-- bytes written.
 writeAsync :: Fh ->
               BS.ByteString ->
               WriteCallback ->
@@ -880,6 +912,9 @@ handle_write_error ctx ret = handle_ret_error' ctx (ret, fromIntegral ret)
                                , fromIntegral `Int'
                                , bs_as_cstring* `BS.ByteString' } -> `CInt' id #}
 
+-- | Synchronously write binary data to the open file represented by @Fh@ starting
+-- at the current file position. The file position is advanced by the number of
+-- bytes written.
 write :: Fh -> BS.ByteString -> IO (Either String CSize)
 write fh bs = with_fh fh $ \ctx -> \fhp ->
   handle_write_error ctx =<< write_sync ctx fhp (BS.length bs) bs
@@ -892,6 +927,8 @@ write fh bs = with_fh fh $ \ctx -> \fhp ->
                                         , id `FunPtr CCallback'
                                         , id `Ptr ()' } -> `CInt' id #}
 
+-- | Asynchronously write binary data to the open file represented by @Fh@ starting
+-- at the specified offset. The file position is *not* modified.
 pwriteAsync :: Fh ->
                BS.ByteString ->
                FileOffset ->
@@ -906,6 +943,8 @@ pwriteAsync fh bs off cb = with_fh fh $ \ctx -> \fhp ->
                                  , fromIntegral `Int'
                                  , bs_as_cstring* `BS.ByteString' } -> `CInt' id #}
 
+-- | Synchronously write binary data to the open file represented by @Fh@ starting
+-- at the specified offset. The file position is *not* modified.
 pwrite :: Fh -> BS.ByteString -> FileOffset -> IO (Either String CSize)
 pwrite fh bs off = with_fh fh $ \ctx -> \fhp ->
   handle_write_error ctx =<< pwrite_sync ctx fhp off (BS.length bs) bs
@@ -916,11 +955,15 @@ pwrite fh bs off = with_fh fh $ \ctx -> \fhp ->
                                     , id `FunPtr CCallback'
                                     , id `Ptr ()' } -> `CInt' id #}
 
+-- | Type of the readAsync and preadAsync callback.
 type ReadCallback = Callback BS.ByteString
 
 extract_read_data :: DataExtractor BS.ByteString
 extract_read_data len ptr = BS.packCStringLen (castPtr ptr, fromIntegral len)
 
+-- | Asynchronously read the specified number of bytes of binary data from the
+-- current file position. The file position is advanced by the number of bytes
+-- read.
 readAsync :: Fh ->
              CSize ->
              ReadCallback ->
@@ -938,6 +981,9 @@ handle_read_error ctx ptr ret = do
                              , fromIntegral `CSize'
                              , id `Ptr CChar' } -> `CInt' id #}
 
+-- | Synchronously read the specified number of bytes of binary data from the
+-- current file position. The file position is advanced by the number of bytes
+-- read.
 read :: Fh -> CSize -> IO (Either String BS.ByteString)
 read fh size = with_fh fh $ \ctx -> \fhp ->
   allocaBytes (fromIntegral size) $ \buf ->
@@ -950,6 +996,8 @@ read fh size = with_fh fh $ \ctx -> \fhp ->
                                       , id `FunPtr CCallback'
                                       , id `Ptr ()' } -> `CInt' id #}
 
+-- | Asynchronously read the specified number of bytes of binary data from the
+-- specified offset. The file position is *not* modified.
 preadAsync :: Fh ->
               CSize ->
               FileOffset ->
@@ -964,11 +1012,14 @@ preadAsync fh size off cb = with_fh fh $ \ctx -> \fhp ->
                                , fromIntegral `CSize'
                                , id `Ptr CChar' } -> `CInt' id #}
 
+-- | Synchronously read the specified number of bytes of binary data from the
+-- specified offset. The file position is *not* modified.
 pread :: Fh -> CSize -> FileOffset -> IO (Either String BS.ByteString)
 pread fh size off = with_fh fh $ \ctx -> \fhp ->
   allocaBytes (fromIntegral size) $ \buf ->
     handle_read_error ctx buf =<< pread_sync ctx fhp off size buf
 
+-- | Type of the syncAsync callback.
 type FSyncCallback = NoDataCallback
 
 {# fun nfs_fsync_async as fsync_async { with_context* `Context'
@@ -976,6 +1027,7 @@ type FSyncCallback = NoDataCallback
                                       , id `FunPtr CCallback'
                                       , id `Ptr () ' } -> `CInt' id #}
 
+-- | Asynchronously write out the file's dirty data cached at the server.
 fsyncAsync :: Fh ->
               FSyncCallback ->
               IO (Either String ())
@@ -985,10 +1037,12 @@ fsyncAsync fh cb = with_fh fh $ \ctx -> \fhp ->
 {# fun nfs_fsync as fsync_sync { with_context* `Context'
                                , id `FhPtr' } -> `CInt' id #}
 
+-- | Synchronously write out the file's dirty data cached at the server.
 fsync :: Fh -> IO (Either String ())
 fsync fh = with_fh fh $ \ctx -> \fhp ->
   handle_ret_error ctx =<< fsync_sync ctx fhp
 
+-- | Type of the lseekAsync callback.
 type LSeekCallback = Callback FileOffset
 
 extract_file_pos :: DataExtractor FileOffset
@@ -1001,6 +1055,7 @@ extract_file_pos _ ptr = peek $ castPtr ptr
                                      , id `FunPtr CCallback'
                                      , id `Ptr ()' } -> `CInt' id #}
 
+-- | Asynchronously update the file position. The new position is returned.
 lseekAsync :: Fh ->
               FileOffset ->
               SeekMode ->
@@ -1015,6 +1070,7 @@ lseekAsync fh off mode cb = with_fh fh $ \ctx -> \fhp ->
                                , fromIntegral `Int'
                                , alloca- `CULong' peek* } -> `CInt' id #}
 
+-- | Synchronously update the file position. The new position is returned.
 lseek :: Fh -> FileOffset -> SeekMode -> IO (Either String FileOffset)
 lseek fh off mode = with_fh fh $ \ctx -> \fhp -> do
   (ret, pos) <- lseek_sync ctx fhp off $ fromEnum mode
@@ -1026,6 +1082,14 @@ lseek fh off mode = with_fh fh $ \ctx -> \fhp -> do
                                               , id `FunPtr CCallback'
                                               , id `Ptr ()' } -> `CInt' id #}
 
+{# fun nfs_get_current_offset as get_current_offset { id `FhPtr' } ->
+ `FileOffset' fromIntegral #}
+
+-- | Return the current file position.
+getCurrentOffset :: Fh -> IO FileOffset
+getCurrentOffset fh = with_fh fh $ \_ -> \fhp -> get_current_offset fhp
+
+-- | Asynchronously truncate the file.
 ftruncateAsync :: Fh ->
                   FileOffset ->
                   TruncateCallback ->
@@ -1033,20 +1097,16 @@ ftruncateAsync :: Fh ->
 ftruncateAsync fh len cb = with_fh fh $ \ctx -> \fhp ->
   wrap_action ctx (ftruncate_async ctx fhp len) cb extract_nothing
 
-{# fun nfs_get_current_offset as get_current_offset { id `FhPtr' } ->
- `FileOffset' fromIntegral #}
-
-getCurrentOffset :: Fh -> IO FileOffset
-getCurrentOffset fh = with_fh fh $ \_ -> \fhp -> get_current_offset fhp
-
 {# fun nfs_ftruncate as ftruncate_sync { with_context* `Context'
                                        , id `FhPtr'
                                        , fromIntegral `FileOffset' } -> `CInt' id #}
 
+-- | Synchronously truncate the file.
 ftruncate :: Fh -> FileOffset -> IO (Either String ())
 ftruncate fh len = with_fh fh $ \ctx -> \fhp ->
   handle_ret_error ctx =<< ftruncate_sync ctx fhp len
 
+-- | Type of the asyncChown callback.
 type ChownCallback = NoDataCallback
 
 {# fun nfs_chown_async as chown_async { with_context* `Context'
@@ -1056,6 +1116,7 @@ type ChownCallback = NoDataCallback
                                       , id `FunPtr CCallback'
                                       , id `Ptr ()' } -> `CInt' id #}
 
+-- | Asynchronously change the owner and group of the specified file or directory.
 chownAsync :: Context ->
               FilePath ->
               UserID ->
@@ -1070,6 +1131,7 @@ chownAsync ctx path uid gid cb =
                                , fromIntegral `UserID'
                                , fromIntegral `GroupID' } -> `CInt' id #}
 
+-- | Synchronously change the owner and group of the specified file or directory.
 chown :: Context -> FilePath -> UserID -> GroupID -> IO (Either String ())
 chown ctx path uid gid = handle_ret_error ctx =<< chown_sync ctx path uid gid
 
@@ -1080,6 +1142,7 @@ chown ctx path uid gid = handle_ret_error ctx =<< chown_sync ctx path uid gid
                                         , id `FunPtr CCallback'
                                         , id `Ptr ()' } -> `CInt' id #}
 
+-- | Asynchronously change the owner and group of the file.
 fchownAsync :: Fh ->
                UserID ->
                GroupID ->
@@ -1093,10 +1156,12 @@ fchownAsync fh uid gid cb = with_fh fh $ \ctx -> \fhp ->
                                  , fromIntegral `UserID'
                                  , fromIntegral `GroupID' } -> `CInt' id #}
 
+-- | Synchronously change the owner and group of the file.
 fchown :: Fh -> UserID -> GroupID -> IO (Either String ())
 fchown fh uid gid = with_fh fh $ \ctx -> \fhp ->
   handle_ret_error ctx =<< fchown_sync ctx fhp uid gid
 
+-- | Type of the chmodAsync callback.
 type ChmodCallback = NoDataCallback
 
 {# fun nfs_chmod_async as chmod_async { with_context* `Context'
@@ -1105,6 +1170,7 @@ type ChmodCallback = NoDataCallback
                                       , id `FunPtr CCallback'
                                       , id `Ptr ()' } -> `CInt' id #}
 
+-- | Asynchronously change the access permissions of the specified file.
 chmodAsync :: Context ->
               FilePath ->
               FileMode ->
@@ -1117,6 +1183,7 @@ chmodAsync ctx path mode cb =
                                , withCString* `FilePath'
                                , fromIntegral `FileMode' } -> `CInt' id #}
 
+-- | Synchronously change the access permissions of the specified file.
 chmod :: Context -> FilePath -> FileMode -> IO (Either String ())
 chmod ctx path mode = handle_ret_error ctx =<< chmod_sync ctx path mode
 
@@ -1126,6 +1193,7 @@ chmod ctx path mode = handle_ret_error ctx =<< chmod_sync ctx path mode
                                         , id `FunPtr CCallback'
                                         , id `Ptr ()' } -> `CInt' id #}
 
+-- | Asynchronously change the access permissions of the file.
 fchmodAsync :: Fh ->
                FileMode ->
                ChmodCallback ->
@@ -1137,10 +1205,12 @@ fchmodAsync fh mode cb = with_fh fh $ \ctx -> \fhp ->
                                  , id `FhPtr'
                                  , fromIntegral `FileMode' } -> `CInt' id #}
 
+-- | Synchronously change the access permissions of the file.
 fchmod :: Fh -> FileMode -> IO (Either String ())
 fchmod fh mode = with_fh fh $ \ctx -> \fhp ->
   handle_ret_error ctx =<< fchmod_sync ctx fhp mode
 
+-- | Type of the asyncChdir callback.
 type ChdirCallback = NoDataCallback
 
 {# fun nfs_chdir_async as chdir_async { with_context* `Context'
@@ -1148,6 +1218,7 @@ type ChdirCallback = NoDataCallback
                                       , id `FunPtr CCallback'
                                       , id `Ptr ()' } -> `CInt' id #}
 
+-- | Asynchronously change the working directory.
 chdirAsync :: Context ->
               FilePath ->
               ChdirCallback ->
@@ -1158,12 +1229,14 @@ chdirAsync ctx path cb =
 {# fun nfs_chdir as chdir_sync { with_context* `Context'
                                , withCString* `FilePath' } -> `CInt' id #}
 
+-- | Synchronously change the working directory.
 chdir :: Context -> FilePath -> IO (Either String ())
 chdir ctx path = handle_ret_error ctx =<< chdir_sync ctx path
 
 {# fun nfs_getcwd as get_cwd { with_context* `Context'
                              , id `Ptr CString' } -> `()' #}
 
+-- | Get the current working directory.
 getCwd :: Context -> IO FilePath
 getCwd ctx = alloca $ \ptr -> do
     get_cwd ctx ptr
@@ -1192,7 +1265,7 @@ instance Monoid AccessMode where
   mempty = accessModeExists
   mappend (AccessMode a) (AccessMode b) = AccessMode (a .|. b)
 
-
+-- | Type of the accessAsync callback.
 type AccessCallback = NoDataCallback
 
 from_access_mode :: AccessMode -> CInt
@@ -1204,6 +1277,7 @@ from_access_mode (AccessMode m) = fromIntegral m
                                         , id `FunPtr CCallback'
                                         , id `Ptr ()' } -> `CInt' id #}
 
+-- | Asynchronously check the user's permissions for a file.
 accessAsync :: Context ->
                FilePath ->
                AccessMode ->
@@ -1216,9 +1290,11 @@ accessAsync ctx path mode cb =
                                  , withCString* `FilePath'
                                  , from_access_mode `AccessMode' } -> `CInt' id #}
 
+-- | Synchronously check the user's permissions for a file.
 access :: Context -> FilePath -> AccessMode -> IO (Either String ())
 access ctx path mode = handle_ret_error ctx =<< access_sync ctx path mode
 
+-- | Type of the readlinkAsync callback.
 type ReadLinkCallback = Callback FilePath
 
 extract_file_path :: DataExtractor FilePath
@@ -1229,6 +1305,7 @@ extract_file_path _ ptr = peekCString $ castPtr ptr
                                             , id `FunPtr CCallback'
                                             , id `Ptr ()' } -> `CInt' id #}
 
+-- | Asynchronously resolve a symbolic link.
 readlinkAsync :: Context ->
                  FilePath ->
                  ReadLinkCallback ->
@@ -1241,6 +1318,7 @@ readlinkAsync ctx path cb =
                                      , id `Ptr CChar'
                                      , fromIntegral `Int' } -> `CInt' id #}
 
+-- | Synchronously resolve a symbolic link.
 readlink :: Context -> FilePath -> IO (Either String FilePath)
 readlink ctx path =
   let
@@ -1290,6 +1368,7 @@ instance Storable StatVFS where
   peek = peek_statvfs_ptr
   poke = poke_statvfs_ptr
 
+-- | Type of the statVfsAsync callback.
 type StatVFSCallback = Callback StatVFS
 
 extract_statvfs :: DataExtractor StatVFS
@@ -1300,6 +1379,7 @@ extract_statvfs _ ptr = peek $ castPtr ptr
                                          , id `FunPtr CCallback'
                                          , id `Ptr ()' } -> `CInt' id #}
 
+-- | Asynchronously query information about the NFS export.
 statvfsAsync :: Context ->
                 FilePath ->
                 StatVFSCallback ->
@@ -1311,6 +1391,7 @@ statvfsAsync ctx path cb =
                                   , withCString* `FilePath'
                                   , alloca- `StatVFS' peek* } -> `CInt' id #}
 
+-- | Synchronously query information about the NFS export.
 statvfs :: Context -> FilePath -> IO (Either String StatVFS)
 statvfs ctx path = handle_ret_error' ctx =<< statvfs_sync ctx path
 
@@ -1319,6 +1400,7 @@ type BlockSize = Word64
 
 -- Duplicates System.Posix.Files.FileStatus which doesn't have a constructor
 -- exported - bummer.
+-- | Information about a file or directory on an NFS export.
 data Stat = Stat { statDev :: DeviceID
                  , statIno :: FileID
                  , statMode :: FileMode
@@ -1416,6 +1498,7 @@ instance Storable Stat where
   peek = peek_stat_ptr
   poke = poke_stat_ptr
 
+-- | Type of the statAsync callback.
 type StatCallback = Callback Stat
 
 extract_stat :: DataExtractor Stat
@@ -1426,6 +1509,7 @@ extract_stat _ ptr = peek $ castPtr ptr
                                     , id `FunPtr CCallback'
                                     , id `Ptr ()' } -> `CInt' id #}
 
+-- | Asynchronously query information about a file or directory.
 statAsync :: Context ->
              FilePath ->
              StatCallback ->
@@ -1437,6 +1521,7 @@ statAsync ctx path cb =
                              , withCString* `FilePath'
                              , alloca- `Stat' peek* } -> `CInt' id #}
 
+-- | Synchronously query information about a file or directory.
 stat :: Context -> FilePath -> IO (Either String Stat)
 stat ctx path = handle_ret_error' ctx =<< stat_sync ctx path
 
@@ -1445,6 +1530,7 @@ stat ctx path = handle_ret_error' ctx =<< stat_sync ctx path
                                       , id `FunPtr CCallback'
                                       , id `Ptr ()' } -> `CInt' id #}
 
+-- | Asynchronously query information about the file.
 fstatAsync :: Fh ->
               StatCallback ->
               IO (Either String ())
@@ -1455,14 +1541,18 @@ fstatAsync fh cb = with_fh fh $ \ctx -> \fhp ->
                                , id `FhPtr'
                                , alloca- `Stat' peek* } -> `CInt' id #}
 
+-- | Synchronously query information about the file.
 fstat :: Fh -> IO (Either String Stat)
 fstat fh = with_fh fh $ \ctx -> \fhp ->
   handle_ret_error' ctx =<< fstat_sync ctx fhp
 
+-- | Type of the utimesAsyncCallback.
 type UTimesCallback = NoDataCallback
 
+-- | Type of the access timestamp.
 type AccessTimeVal = TimeVal
 
+-- | Type of the modification timestamp.
 type ModificationTimeVal = TimeVal
 
 utimes_helper :: Maybe (AccessTimeVal, ModificationTimeVal) ->
@@ -1484,6 +1574,7 @@ utimes_helper (Just (atv, mtv)) act =
                                         , id `FunPtr CCallback'
                                         , id `Ptr ()' } -> `CInt' id #}
 
+-- | Asynchronously update the access and modification timestamps of a file.
 utimesAsync :: Context ->
                FilePath ->
                Maybe (AccessTimeVal, ModificationTimeVal) ->
@@ -1496,6 +1587,7 @@ utimesAsync ctx path mtvs cb = utimes_helper mtvs $ \ptr ->
                                  , withCString* `FilePath'
                                  , id `TimeValPtr' } -> `CInt' id #}
 
+-- | Synchronously update the access and modification timestamps of a file.
 utimes :: Context ->
           FilePath ->
           Maybe (AccessTimeVal, ModificationTimeVal) ->
@@ -1503,6 +1595,7 @@ utimes :: Context ->
 utimes ctx path mtvs =
   utimes_helper mtvs $ \ptr -> handle_ret_error ctx =<< utimes_sync ctx path ptr
 
+-- | Type of the unlinkAsync callback.
 type UnlinkCallback = NoDataCallback
 
 {# fun nfs_unlink_async as unlink_async { with_context* `Context'
@@ -1510,6 +1603,7 @@ type UnlinkCallback = NoDataCallback
                                         , id `FunPtr CCallback'
                                         , id `Ptr ()' } -> `CInt' id #}
 
+-- | Asynchronously unlink a file.
 unlinkAsync :: Context -> FilePath -> UnlinkCallback -> IO (Either String ())
 unlinkAsync ctx path cb =
   wrap_action ctx (unlink_async ctx path) cb extract_nothing
@@ -1517,6 +1611,7 @@ unlinkAsync ctx path cb =
 {# fun nfs_unlink as unlink_sync { with_context* `Context'
                                  , withCString* `FilePath' } -> `CInt' id #}
 
+-- | Synchronously unlink a file.
 unlink :: Context -> FilePath -> IO (Either String ())
 unlink ctx path =
   handle_ret_error ctx =<< unlink_sync ctx path
