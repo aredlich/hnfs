@@ -1,10 +1,14 @@
--- System.Nfs
---
--- Copyright (C) 2014 Arne Redlich <arne.redlich@googlemail.com>
---
--- Licensed under the LGPL v2.1 - see the LICENSE file.
---
--- Haskell bindings to libnfs - https://github.com/sahlberg/libnfs
+{-|
+Module      : System.Nfs
+Description : hnfs - Nfs client library
+Copyright   : (c) 2014 Arne Redlich <arne.redlich@googlemail.com>
+License     : LGPL v2.1
+Maintainer  : Arne Redlich <arne.redlich@googlemail.com>
+Stability   : experimental
+Portability : POSIX
+
+Haskell bindings for <https://github.com/sahlberg/libnfs libnfs>).
+-}
 
 {-# LANGUAGE ForeignFunctionInterface, EmptyDataDecls #-}
 
@@ -221,6 +225,11 @@ data Context_
 -- so we can have our cake and eat it too: if the Context isn't explicitly destroyed
 -- the pointer will be disposed by the garbage collection.
 -- The MVar *must not* be left empty otherwise the finalizer will choke.
+
+-- | Opaque handle that represents an NFS export. Several Contexts to the same
+-- export can be used concurrently. A Context should be released with
+-- @destroyContext@ to free its resources. If not released explicitly the garbage
+-- collection will finalize it at an unspecified point in time.
 data Context = Context !(MVar (Maybe ContextPtr))
 
 finalize_context_mvar :: MVar (Maybe ContextPtr) -> IO ()
@@ -242,8 +251,11 @@ with_context (Context mv) act = withMVar mv $ \mctx -> case mctx of
   Just ctx -> act ctx
   Nothing -> fail "context was destroyed"
 
+-- | Create a new @Context@.
 {# fun nfs_init_context as initContext {} -> `Context' mk_context* #}
 
+-- | Explicitly release a @Context@. After being released the @Context@ becomes
+-- unusable, i.e. any further action using it will raise an error.
 destroyContext :: Context -> IO ()
 destroyContext (Context mv) = finalize_context_mvar mv
 
@@ -252,21 +264,27 @@ maybe_error ptr
   | ptr == nullPtr = return Nothing
   | otherwise = liftM Just $ peekCString ptr
 
+-- | Get a string representation of the last error that happened in the @Context@.
 {# fun nfs_get_error as getError { with_context* `Context' } ->
  `Maybe String' maybe_error* #}
 
+-- | Get the maximum READ3 size supported by the server.
 {# fun nfs_get_readmax as getReadMax { with_context* `Context' } ->
  `Integer' fromIntegral #}
 
+-- | Get the maximum WRITE3 size supported by the server.
 {# fun nfs_get_writemax as getWriteMax { with_context* `Context' } ->
  `Integer' fromIntegral #}
 
+-- | Modify the TCP SYN count.
 {# fun nfs_set_tcp_syncnt as setTcpSynCount { with_context* `Context',
                                               fromIntegral `Integer'} -> `()' #}
 
+-- | Set the @UserID@ the client sends to the server.
 {# fun nfs_set_uid as setUid { with_context* `Context',
                                fromIntegral `UserID' } -> `()' #}
 
+-- | Set the @GroupID@ the client sends to the server.
 {# fun nfs_set_gid as setGid { with_context* `Context',
                                fromIntegral `GroupID' } -> `()' #}
 
@@ -284,26 +302,34 @@ maybe_error ptr
                            POLLNVAL as PollNval } deriving (Eq, Show) #}
 
 -- Push to a higher level API?
+-- | Poll events the async interface might be interested in.
 newtype Event = Event Int deriving (Eq, Show)
 
+-- | The neutral element for the Monoid instance.
 eventNone :: Event
 eventNone = Event $ fromEnum PollNone
 
+-- | Read event.
 eventRead :: Event
 eventRead = Event $ fromEnum PollIn
 
+-- | Write event.
 eventWrite :: Event
 eventWrite = Event $ fromEnum PollOut
 
+-- | Error event.
 eventErr :: Event
 eventErr = Event $ fromEnum PollErr
 
+-- | HUP event.
 eventHup :: Event
 eventHup = Event $ fromEnum PollHup
 
+-- | Urgent read data.
 eventPri :: Event
 eventPri = Event $ fromEnum PollPri
 
+-- | Invalid event.
 eventNval :: Event
 eventNval = Event $ fromEnum PollNval
 
@@ -317,15 +343,19 @@ to_event e = Event $ fromIntegral e
 from_event :: Event -> CInt
 from_event (Event e) = fromIntegral e
 
+-- | Query the context which event(s) to poll for.
 {# fun nfs_which_events as whichEvents { with_context* `Context' } ->
  `Event' to_event #}
 
+-- | Handle the @Event@ detected on the @Fd@.
 {# fun nfs_service as service { with_context* `Context'
                               , from_event `Event'
                               } -> `()' #}
 
+-- | Get the @Fd@ (file descriptor) to poll for async events.
 {# fun nfs_get_fd as getFd { with_context* `Context' } -> `Fd' fromIntegral #}
 
+-- | Queue length of this @Context@.
 {# fun nfs_queue_length as queueLength { with_context* `Context' } -> `Integer' fromIntegral #}
 
 errmsg :: Maybe String -> String
@@ -366,6 +396,7 @@ handle_cb_error status ptr extract
   | status >= 0 = liftM Right $ extract status ptr
   | otherwise = liftM Left $ peekCString (castPtr ptr)
 
+-- | General type of callbacks.
 type Callback a = (Either String a) -> IO ()
 
 to_callback_ptr :: Callback a ->
@@ -379,8 +410,10 @@ to_callback_ptr cb extractor = wrap_cb =<< to_c_callback cb extractor
     to_c_callback cb' extractor' = return $ \err _ ptr _ ->
       handle_cb_error err ptr extractor' >>= cb'
 
+-- | Type of callbacks that do not expect inbound data.
 type NoDataCallback = Callback ()
 
+-- | Type of the callback for mountAsync.
 type MountCallback = NoDataCallback
 
 type WrappedAction = FunPtr CCallback -> Ptr () -> IO CInt
@@ -394,7 +427,10 @@ wrap_action ctx action cb extract = do
   ccb <- to_callback_ptr cb extract
   handle_ret_error ctx =<< action ccb nullPtr
 
+-- | An NFS server's (IP) address.
 type ServerAddress = String
+
+-- | Name of an NFS export.
 type ExportName = String
 
 extract_nothing :: DataExtractor ()
@@ -411,6 +447,7 @@ extract_nothing _ _ = return ()
                                       , id `FunPtr CCallback'
                                       , id `Ptr ()' } -> `CInt' id #}
 
+-- | Invoke an asynchronous mount of the NFS export of the given server.
 mountAsync :: Context ->
               ServerAddress ->
               ExportName ->
@@ -424,6 +461,7 @@ mountAsync ctx addr export cb =
                                , withCString* `ExportName'
                                } -> `CInt' id #}
 
+-- | Synchronously mount the specified NFS export of the given server.
 mount :: Context -> ServerAddress -> ExportName -> IO (Either String ())
 mount ctx addr xprt = handle_ret_error ctx =<< mount_sync ctx addr xprt
 
@@ -434,6 +472,9 @@ data Dir_
 {# fun nfs_closedir as close_dir { with_context* `Context'
                                  , id `DirPtr' } -> `()' #}
 
+-- | Opaque handle representing an open directory. Should be closed after use
+-- with @closeDir@ to release the associated resources. If not released explicitly
+-- the garbage collector will dispose it at an unspecified point in time.
 data Dir = Dir !(MVar (Maybe (Context, DirPtr)))
 
 mk_dir :: Context -> DirPtr -> IO Dir
@@ -447,9 +488,11 @@ finalize_dir_mvar mv = modifyMVar_ mv $ \mpair -> case mpair of
   Just (ctx, ptr) -> close_dir ctx ptr >> return Nothing
   Nothing -> return Nothing
 
+-- | Explicitly release a @Dir@ handle.
 closeDir :: Dir -> IO ()
 closeDir (Dir mv) = finalize_dir_mvar mv
 
+-- | Type of the callback for openDirAsync
 type OpenDirCallback = Callback Dir
 
 {# fun nfs_opendir_async as opendir_async { with_context* `Context'
@@ -457,6 +500,7 @@ type OpenDirCallback = Callback Dir
                                           , id `FunPtr CCallback'
                                           , id `Ptr ()' } -> `CInt' id #}
 
+-- | Asynchronously open a directory.
 openDirAsync :: Context ->
                 FilePath ->
                 OpenDirCallback ->
@@ -471,6 +515,7 @@ openDirAsync ctx path cb =
                                    , withCString* `FilePath'
                                    , alloca- `DirPtr' peek* } -> `CInt' id #}
 
+-- | Synchronously open a directory.
 openDir :: Context -> FilePath -> IO (Either String Dir)
 openDir ctx path = handle_ret_error'' ctx (mk_dir ctx) =<< opendir_sync ctx path
 
