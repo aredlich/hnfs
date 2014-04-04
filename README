@@ -39,12 +39,12 @@ it could lead to data loss.
 
 ## TODO
 
-* Documentation
+* Improve documentation - currently mostly stubs.
 * Revisit error handling - use exceptions instead of / together with Either?
-* Support for conduits
 * Make tests more fine grained
 * More tests
-* Split up into Nfs.Base, Nfs.Sync and Nfs.Async?
+* Split library up into Nfs.Base, Nfs.Sync and Nfs.Async?
+* Split tester up into Utils, BasicTests, AdvancedTests, ConduitTests and Main
 
 ## License
 
