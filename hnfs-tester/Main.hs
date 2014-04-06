@@ -240,6 +240,15 @@ with_file nfs ctx parent action = bracket mkfile rmfile action
         Left s -> fail $ "failed to unlink file " ++ path ++ ": " ++ s
         Right () -> return ()
 
+with_file' :: SyncNfs ->
+              Nfs.ServerAddress ->
+              Nfs.ExportName ->
+              (Nfs.Context -> FilePath -> FilePath -> IO ()) ->
+              IO ()
+with_file' nfs addr xprt act =
+  with_directory' nfs addr xprt "/" $ \ctx dpath ->
+    with_file nfs ctx dpath $ \fpath -> act ctx dpath fpath
+
 list_directory :: SyncNfs ->
                   Nfs.Context ->
                   FilePath ->
@@ -295,8 +304,7 @@ test_create_and_remove_directory srv xprt nfs =
    HU.testCase "Create and remove directory" assertion
 
 test_create_and_remove_file srv xprt nfs =
-  let assertion = with_directory' nfs srv xprt "/" $ \ctx dir ->
-        with_file nfs ctx dir $ \fpath -> do
+  let assertion = with_file' nfs srv xprt $ \ctx _ fpath -> do
           ret <- syncStat nfs ctx fpath
           case ret of
             Left s -> HU.assertFailure $ "failed to stat " ++ fpath ++ ": " ++ s
@@ -336,14 +344,13 @@ test_write_and_read_file :: Nfs.ServerAddress ->
                             TestTree
 test_write_and_read_file srv xprt nfs =
   let pattern = BSC8.pack "of no particular importance"
-      assertion = with_directory' nfs srv xprt "/" $ \ctx dir ->
-        with_file nfs ctx dir $ \fpath -> do
-          with_fh nfs ctx fpath WriteOnly $ \fh -> do
-            check_pos nfs ctx fh 0 "before write"
-            check_write nfs ctx fh pattern
-          with_fh nfs ctx fpath ReadOnly $ \fh -> do
-            check_pos nfs ctx fh 0 "before read"
-            check_read nfs ctx fh pattern
+      assertion = with_file' nfs srv xprt $ \ctx _ fpath -> do
+        with_fh nfs ctx fpath WriteOnly $ \fh -> do
+          check_pos nfs ctx fh 0 "before write"
+          check_write nfs ctx fh pattern
+        with_fh nfs ctx fpath ReadOnly $ \fh -> do
+          check_pos nfs ctx fh 0 "before read"
+          check_read nfs ctx fh pattern
   in
    HU.testCase "Write to and read from file" assertion
 
@@ -353,25 +360,25 @@ test_truncate_and_stat :: Nfs.ServerAddress ->
                           TestTree
 test_truncate_and_stat srv xprt nfs =
   let tsize = 12345
-      assertion =  with_directory' nfs srv xprt "/" $ \ctx dir ->
-        with_file nfs ctx dir $ \fpath -> do
-          res <- runEitherT $ do
-            ret <- liftIO $ syncTruncate nfs ctx fpath $ fromIntegral tsize
-            case ret of
-              Left s -> left $ "truncate failed: " ++ s
-              Right _ -> right ()
-            stret <- liftIO $ syncStat nfs ctx fpath
-            st <- case stret of
-              Left s -> left $ "fstat failed: " ++ s
-              Right st' -> right st'
-            liftIO $ HU.assertBool "stat should indicate it's a file" $
-              Nfs.isRegularFile st
-            liftIO $ HU.assertEqual "file size should match truncated size"
-              tsize $ Nfs.statSize st
-            right ()
-          case res of
-            Left s -> HU.assertFailure s
-            Right () -> return ()
+      assertion' ctx fpath = do
+        ret <- liftIO $ syncTruncate nfs ctx fpath $ fromIntegral tsize
+        case ret of
+          Left s -> left $ "truncate failed: " ++ s
+          Right _ -> right ()
+        stret <- liftIO $ syncStat nfs ctx fpath
+        st <- case stret of
+          Left s -> left $ "fstat failed: " ++ s
+          Right st' -> right st'
+        liftIO $ HU.assertBool "stat should indicate it's a file" $
+          Nfs.isRegularFile st
+        liftIO $ HU.assertEqual "file size should match truncated size"
+          tsize $ Nfs.statSize st
+        right ()
+      assertion = with_file' nfs srv xprt $ \ctx _ fpath -> do
+        res <- runEitherT $ assertion' ctx fpath
+        case res of
+          Left s -> HU.assertFailure s
+          Right () -> return ()
   in
    HU.testCase "Truncate and stat file" assertion
 
@@ -381,26 +388,26 @@ test_ftruncate_and_fstat :: Nfs.ServerAddress ->
                             TestTree
 test_ftruncate_and_fstat srv xprt nfs =
   let tsize = 67890
-      assertion = with_directory' nfs srv xprt "/" $ \ctx dir ->
-        with_file nfs ctx dir $ \fpath -> do
-          with_fh nfs ctx fpath WriteOnly $ \fh -> do
-            res <- runEitherT $ do
-              ret <- liftIO $ syncFTruncate nfs ctx fh $ fromIntegral tsize
-              case ret of
-                Left s -> left $ "ftruncate failed: " ++ s
-                Right _ -> right ()
-              stret <- liftIO $ syncFStat nfs ctx fh
-              st <- case stret of
-                Left s -> left $ "fstat failed: " ++ s
-                Right st' -> right st'
-              liftIO $ HU.assertBool "stat should indicate it's a file" $
-                Nfs.isRegularFile st
-              liftIO $ HU.assertEqual "file size should match truncated size"
-                tsize $ Nfs.statSize st
-              right ()
-            case res of
-              Left s -> HU.assertFailure s
-              Right () -> return ()
+      assertion' ctx fh = do
+        ret <- liftIO $ syncFTruncate nfs ctx fh $ fromIntegral tsize
+        case ret of
+          Left s -> left $ "ftruncate failed: " ++ s
+          Right _ -> right ()
+        stret <- liftIO $ syncFStat nfs ctx fh
+        st <- case stret of
+          Left s -> left $ "fstat failed: " ++ s
+          Right st' -> right st'
+        liftIO $ HU.assertBool "stat should indicate it's a file" $
+          Nfs.isRegularFile st
+        liftIO $ HU.assertEqual "file size should match truncated size"
+          tsize $ Nfs.statSize st
+        right ()
+      assertion = with_file' nfs srv xprt $ \ctx _ fpath ->
+        with_fh nfs ctx fpath WriteOnly $ \fh -> do
+          res <- runEitherT $ assertion' ctx fh
+          case res of
+            Left s -> HU.assertFailure s
+            Right () -> return ()
   in
    HU.testCase "Ftruncate and fstat file" assertion
 
@@ -410,38 +417,38 @@ test_ftruncate_and_lseek :: Nfs.ServerAddress ->
                             TestTree
 test_ftruncate_and_lseek srv xprt nfs =
   let tsize = 13579
-      assertion = with_directory' nfs srv xprt "/" $ \ctx dir ->
-        with_file nfs ctx dir $ \fpath -> do
+      assertion' ctx fh = do
+        ret <- liftIO $ syncFTruncate nfs ctx fh $ fromIntegral tsize
+        case ret of
+          Left s -> left $ "ftruncate failed: " ++ s
+          Right _ -> right ()
+        liftIO $ check_pos nfs ctx fh 0 "figure out file pos"
+        sret <- liftIO $ syncLSeek nfs ctx fh 0 SeekFromEnd
+        case sret of
+          Left s -> left $ "seek 0 from end failed: " ++ s
+          Right pos -> liftIO $ HU.assertEqual "expect file pos end"
+                       tsize $ fromIntegral pos
+        sret <- liftIO $ syncLSeek nfs ctx fh 1 AbsoluteSeek
+        case sret of
+          Left s -> left $ "absolute seek to pos 1 failed: " ++ s
+          Right pos -> liftIO $ HU.assertEqual "expect file pos 1"
+                       1 $ fromIntegral pos
+        sret <- liftIO $ syncLSeek nfs ctx fh (-1) RelativeSeek
+        case sret of
+          Left s -> left $ "relative seek -1 failed: " ++ s
+          Right pos -> liftIO $ HU.assertEqual "expect file pos 0"
+                       0 $ fromIntegral pos
+        sret <- liftIO $ syncLSeek nfs ctx fh (-1) RelativeSeek
+        case sret of
+          Left s -> right ()
+          Right pos -> left $ "could do a relative seek to pos " ++ show pos
+        sret <- liftIO $ syncLSeek nfs ctx fh (-(tsize + 1)) SeekFromEnd
+        case sret of
+          Left s -> right ()
+          Right pos -> left $ "could seek to -(tsize + 1) from end to pos " ++ show pos
+      assertion = with_file' nfs srv xprt $ \ctx _ fpath ->
           with_fh nfs ctx fpath WriteOnly $ \fh -> do
-            res <- runEitherT $ do
-              ret <- liftIO $ syncFTruncate nfs ctx fh $ fromIntegral tsize
-              case ret of
-                Left s -> left $ "ftruncate failed: " ++ s
-                Right _ -> right ()
-              liftIO $ check_pos nfs ctx fh 0 "figure out file pos"
-              sret <- liftIO $ syncLSeek nfs ctx fh 0 SeekFromEnd
-              case sret of
-                Left s -> left $ "seek 0 from end failed: " ++ s
-                Right pos -> liftIO $ HU.assertEqual "expect file pos end"
-                             tsize $ fromIntegral pos
-              sret <- liftIO $ syncLSeek nfs ctx fh 1 AbsoluteSeek
-              case sret of
-                Left s -> left $ "absolute seek to pos 1 failed: " ++ s
-                Right pos -> liftIO $ HU.assertEqual "expect file pos 1"
-                             1 $ fromIntegral pos
-              sret <- liftIO $ syncLSeek nfs ctx fh (-1) RelativeSeek
-              case sret of
-                Left s -> left $ "relative seek -1 failed: " ++ s
-                Right pos -> liftIO $ HU.assertEqual "expect file pos 0"
-                             0 $ fromIntegral pos
-              sret <- liftIO $ syncLSeek nfs ctx fh (-1) RelativeSeek
-              case sret of
-                Left s -> right ()
-                Right pos -> left $ "could do a relative seek to pos " ++ show pos
-              sret <- liftIO $ syncLSeek nfs ctx fh (-(tsize + 1)) SeekFromEnd
-              case sret of
-                Left s -> right ()
-                Right pos -> left $ "could seek to -(tsize + 1) from end to pos " ++ show pos
+            res <- runEitherT $ assertion' ctx fh
             case res of
               Left s -> HU.assertFailure s
               Right () -> return ()
@@ -520,17 +527,17 @@ test_ftruncate_pwrite_and_pread_file srv xprt nfs =
   let pattern = BSC8.pack "not of any importance either"
       offset = 42
       tsize = offset + (BS.length pattern)
-      assertion = with_directory' nfs srv xprt "/" $ \ctx dir ->
-        with_file nfs ctx dir $ \fpath -> do
+      assertion' ctx fh = do
+        ret <- liftIO $ syncFTruncate nfs ctx fh $ fromIntegral tsize
+        case ret of
+          Left s -> left $ "ftruncate failed: " ++ s
+          Right _ -> right ()
+        liftIO $ check_pwrite nfs ctx fh (fromIntegral offset) pattern
+        liftIO $ check_pread nfs ctx fh (fromIntegral offset) pattern
+        right ()
+      assertion = with_file' nfs srv xprt $ \ctx _ fpath ->
           with_fh nfs ctx fpath ReadWrite $ \fh -> do
-            res <- runEitherT $ do
-              ret <- liftIO $ syncFTruncate nfs ctx fh $ fromIntegral tsize
-              case ret of
-                Left s -> left $ "ftruncate failed: " ++ s
-                Right _ -> right ()
-              liftIO $ check_pwrite nfs ctx fh (fromIntegral offset) pattern
-              liftIO $ check_pread nfs ctx fh (fromIntegral offset) pattern
-              right ()
+            res <- runEitherT $ assertion' ctx fh
             case res of
               Left s -> HU.assertFailure s
               Right _ -> return ()
@@ -656,14 +663,13 @@ test_fh_source_and_sink :: Nfs.ServerAddress ->
                            TestTree
 test_fh_source_and_sink addr xprt nfs =
   let pattern = BSC8.pack "some arbitrary, utterly unremarkable text"
-      assertion = with_directory' nfs addr xprt "/" $ \ctx dir ->
-        with_file nfs ctx dir $ \source ->
-          with_fh nfs ctx source ReadWrite $ \fh -> do
-            check_pwrite nfs ctx fh 0 pattern
-            with_file nfs ctx dir $ \sink ->
-              with_fh nfs ctx sink ReadWrite $ \fh2 -> do
-                runResourceT $ NfsC.sourceFh fh $$ NfsC.sinkFh fh2
-                check_pread nfs ctx fh2 0 pattern
+      assertion = with_file' nfs addr xprt $ \ctx dir source ->
+        with_fh nfs ctx source ReadWrite $ \fh -> do
+          check_pwrite nfs ctx fh 0 pattern
+          with_file nfs ctx dir $ \sink ->
+            with_fh nfs ctx sink ReadWrite $ \fh2 -> do
+              runResourceT $ NfsC.sourceFh fh $$ NfsC.sinkFh fh2
+              check_pread nfs ctx fh2 0 pattern
   in
    HU.testCase "Conduit source and sink - Fh" assertion
 
@@ -673,14 +679,13 @@ test_file_path_source_and_sink :: Nfs.ServerAddress ->
                                   TestTree
 test_file_path_source_and_sink addr xprt nfs =
   let pattern = BSC8.pack "some dull string"
-      assertion = with_directory' nfs addr xprt "/" $ \ctx dir ->
-        with_file nfs ctx dir $ \source ->
-          with_fh nfs ctx source ReadWrite $ \fh -> do
-            check_pwrite nfs ctx fh 0 pattern
-            with_file nfs ctx dir $ \sink -> do
-              runResourceT $ NfsC.sourceFile ctx source $$ NfsC.sinkFile ctx sink
-              with_fh nfs ctx sink ReadWrite $ \fh2 ->
-                check_pread nfs ctx fh2 0 pattern
+      assertion = with_file' nfs addr xprt $ \ctx dir source ->
+        with_fh nfs ctx source ReadWrite $ \fh -> do
+          check_pwrite nfs ctx fh 0 pattern
+          with_file nfs ctx dir $ \sink -> do
+            runResourceT $ NfsC.sourceFile ctx source $$ NfsC.sinkFile ctx sink
+            with_fh nfs ctx sink ReadWrite $ \fh2 ->
+              check_pread nfs ctx fh2 0 pattern
   in
    HU.testCase "Conduit source and sink - FilePath" assertion
 
@@ -695,30 +700,29 @@ test_file_path_range_source_and_sink addr xprt nfs =
       size2 = BS.length pattern2
       pattern3 = BSC8.pack "text"
       size3 = BS.length pattern3
-      assertion = with_directory' nfs addr xprt "/" $ \ctx dir ->
-        with_file nfs ctx dir $ \source ->
-          with_fh nfs ctx source ReadWrite $ \fh -> do
-            check_write nfs ctx fh pattern1
-            check_write nfs ctx fh pattern2
-            check_write nfs ctx fh pattern3
-            with_file nfs ctx dir $ \sink1 ->
-              with_file nfs ctx dir $ \sink2 ->
-                with_file nfs ctx dir $ \sink3 -> do
-                  runResourceT $
-                    NfsC.sourceFileRange ctx source Nothing (Just $ fromIntegral size1) $$
-                    NfsC.sinkFile ctx sink1
-                  runResourceT $
-                    NfsC.sourceFileRange ctx source (Just $ fromIntegral size1) (Just $ fromIntegral size2) $$
-                    NfsC.sinkFile ctx sink2
-                  runResourceT $
-                    NfsC.sourceFileRange ctx source (Just $ fromIntegral (size1 + size2)) Nothing $$
-                    NfsC.sinkFile ctx sink3
-                  with_fh nfs ctx sink1 ReadOnly $ \fh' ->
-                    check_read nfs ctx fh' pattern1
-                  with_fh nfs ctx sink2 ReadOnly $ \fh' ->
-                    check_read nfs ctx fh' pattern2
-                  with_fh nfs ctx sink3 ReadOnly $ \fh' ->
-                    check_read nfs ctx fh' pattern3
+      assertion = with_file' nfs addr xprt $ \ctx dir source ->
+        with_fh nfs ctx source ReadWrite $ \fh -> do
+          check_write nfs ctx fh pattern1
+          check_write nfs ctx fh pattern2
+          check_write nfs ctx fh pattern3
+          with_file nfs ctx dir $ \sink1 ->
+            with_file nfs ctx dir $ \sink2 ->
+              with_file nfs ctx dir $ \sink3 -> do
+                runResourceT $
+                  NfsC.sourceFileRange ctx source Nothing (Just $ fromIntegral size1) $$
+                  NfsC.sinkFile ctx sink1
+                runResourceT $
+                  NfsC.sourceFileRange ctx source (Just $ fromIntegral size1) (Just $ fromIntegral size2) $$
+                  NfsC.sinkFile ctx sink2
+                runResourceT $
+                  NfsC.sourceFileRange ctx source (Just $ fromIntegral (size1 + size2)) Nothing $$
+                  NfsC.sinkFile ctx sink3
+                with_fh nfs ctx sink1 ReadOnly $ \fh' ->
+                  check_read nfs ctx fh' pattern1
+                with_fh nfs ctx sink2 ReadOnly $ \fh' ->
+                  check_read nfs ctx fh' pattern2
+                with_fh nfs ctx sink3 ReadOnly $ \fh' ->
+                  check_read nfs ctx fh' pattern3
   in
    HU.testCase "Conduit source and sink - FilePath" assertion
 

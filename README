@@ -41,7 +41,7 @@ it could lead to data loss.
 
 * Improve documentation - currently mostly stubs.
 * Revisit error handling - use exceptions instead of / together with Either?
-* Make tests more fine grained
+* Clean up tests (ReaderT might help?) and make them more fine grained
 * More tests
 * Split library up into Nfs.Base, Nfs.Sync and Nfs.Async?
 * Split tester up into Utils, BasicTests, AdvancedTests, ConduitTests and Main
