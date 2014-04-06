@@ -10,8 +10,11 @@ module Main where
 
 import Control.Concurrent.MVar
 import Control.Exception
+import qualified Control.Exception.Lifted as LE
 import Control.Monad.IO.Class
+import Control.Monad.Trans (lift)
 import Control.Monad.Trans.Either
+import Control.Monad.Trans.Reader
 import Control.Monad.Trans.Resource (runResourceT)
 
 import qualified Data.ByteString as BS
@@ -155,212 +158,199 @@ data SyncNfs = SyncNfs { syncMount :: Nfs.Context ->
                                       IO (Either String FileOffset)
                        }
 
+data TestContext = TestContext { ctxSyncNfs :: SyncNfs
+                               , ctxContext :: Nfs.Context
+                               , ctxServer :: Nfs.ServerAddress
+                               , ctxExport :: Nfs.ExportName }
+
 with_context :: (Nfs.Context -> IO ()) -> IO ()
 with_context = bracket Nfs.initContext Nfs.destroyContext
 
-mount :: SyncNfs ->
-         Nfs.Context ->
-         Nfs.ServerAddress ->
-         Nfs.ExportName ->
-         IO (Either String ())
-mount nfs ctx srv xprt = do
-  Nfs.setUid ctx 0
-  Nfs.setGid ctx 0
-  syncMount nfs ctx srv xprt
+mount :: ReaderT TestContext IO (Either String ())
+mount = do
+  tctx <- ask
+  let ctx = ctxContext tctx
+  liftIO $ Nfs.setUid ctx 0
+  liftIO $ Nfs.setUid ctx 0
+  liftIO $ syncMount (ctxSyncNfs tctx) ctx (ctxServer tctx) (ctxExport tctx)
 
-with_mount :: SyncNfs ->
-              Nfs.ServerAddress ->
-              Nfs.ExportName ->
-              (Nfs.Context -> IO ()) ->
-              IO ()
-with_mount nfs srv xprt action = with_context $ \ctx -> do
-  ret <- mount nfs ctx srv xprt
+with_mount :: ReaderT TestContext IO () -> ReaderT TestContext IO ()
+with_mount act = do
+  tctx <- ask
+  ret <- mount
   case ret of
-    Left s -> HU.assertFailure $ "mounting " ++ srv ++ ":" ++ xprt ++ " failed: " ++ s
-    Right () -> action ctx
+    Left s -> liftIO $ HU.assertFailure $
+              "mounting " ++ (ctxServer tctx) ++ ":" ++ (ctxExport tctx) ++
+              " failed: " ++ s
+    Right () -> act
 
 mk_random_path :: FilePath -> IO FilePath
 mk_random_path parent = do
   uuid <- return.toString =<< nextRandom
   return $ joinPath [ parent, uuid ]
 
-with_directory :: SyncNfs ->
-                  Nfs.Context ->
-                  FilePath ->
-                  (FilePath -> IO ()) ->
-                  IO ()
-with_directory nfs ctx parent action = bracket mkdir rmdir action
+with_directory :: FilePath ->
+                  (FilePath -> ReaderT TestContext IO ()) ->
+                  ReaderT TestContext IO ()
+with_directory parent action = LE.bracket mkdir rmdir action
   where
-    mkdir :: IO FilePath
     mkdir = do
-      path <- mk_random_path parent
-      ret <- syncMkDir nfs ctx path
+      tctx <- ask
+      let ctx = ctxContext tctx
+          nfs = ctxSyncNfs tctx
+      path <- liftIO $ mk_random_path parent
+      ret <- liftIO $ syncMkDir nfs ctx path
       case ret of
         Left s -> fail $ "failed to create directory: " ++ s
         Right () -> return path
-
-    rmdir :: FilePath -> IO ()
     rmdir path = do
-      ret <- syncRmDir nfs ctx path
+      tctx <- ask
+      let ctx = ctxContext tctx
+          nfs = ctxSyncNfs tctx
+      ret <- liftIO $ syncRmDir nfs ctx path
       case ret of
         -- XXX: does this override the original assertion?
-        Left s -> HU.assertFailure $ "failed to remove path: " ++ s
+        Left s -> liftIO $ HU.assertFailure $ "failed to remove path: " ++ s
         Right () -> return ()
 
-with_directory' :: SyncNfs ->
-                   Nfs.ServerAddress ->
-                   Nfs.ExportName ->
-                   FilePath ->
-                   (Nfs.Context -> FilePath -> IO ()) ->
-                   IO ()
-with_directory' nfs addr xprt parent action =
-  with_mount nfs addr xprt $ \ctx ->
-    with_directory nfs ctx parent $ \path ->
-      action ctx path
+with_directory' :: FilePath ->
+                  (FilePath -> ReaderT TestContext IO ()) ->
+                  ReaderT TestContext IO ()
+with_directory' parent action = with_mount $ with_directory parent action
 
-with_file :: SyncNfs ->
-             Nfs.Context ->
-             FilePath ->
-             (FilePath -> IO ()) ->
-             IO ()
-with_file nfs ctx parent action = bracket mkfile rmfile action
+with_file :: FilePath ->
+             (FilePath -> ReaderT TestContext IO ()) ->
+             ReaderT TestContext IO ()
+with_file parent action = LE.bracket mkfile rmfile action
   where
-    mkfile :: IO FilePath
     mkfile = do
-      path <- mk_random_path parent
-      ret <- syncCreat nfs ctx path WriteOnly
+      tctx <- ask
+      let ctx = ctxContext tctx
+          nfs = ctxSyncNfs tctx
+      path <- liftIO $ mk_random_path parent
+      ret <- liftIO $ syncCreat nfs ctx path WriteOnly
       case ret of
         Left s -> fail $ "failed to create file: " ++ s
-        Right fh -> Nfs.closeFh fh >> return path
-
-    rmfile :: FilePath -> IO ()
+        Right fh -> liftIO $ Nfs.closeFh fh >> return path
     rmfile path = do
-      ret <- syncUnlink nfs ctx path
+      tctx <- ask
+      let ctx = ctxContext tctx
+          nfs = ctxSyncNfs tctx
+      ret <- liftIO $ syncUnlink nfs ctx path
       case ret of
         Left s -> fail $ "failed to unlink file " ++ path ++ ": " ++ s
         Right () -> return ()
 
-with_file' :: SyncNfs ->
-              Nfs.ServerAddress ->
-              Nfs.ExportName ->
-              (Nfs.Context -> FilePath -> FilePath -> IO ()) ->
-              IO ()
-with_file' nfs addr xprt act =
-  with_directory' nfs addr xprt "/" $ \ctx dpath ->
-    with_file nfs ctx dpath $ \fpath -> act ctx dpath fpath
+with_file' :: (FilePath -> FilePath -> ReaderT TestContext IO ()) ->
+              ReaderT TestContext IO ()
+with_file' act =
+  with_directory' "/" $ \dpath -> with_file dpath $ \fpath -> act dpath fpath
 
-list_directory :: SyncNfs ->
-                  Nfs.Context ->
-                  FilePath ->
-                  IO (Either String [Nfs.Dirent])
-list_directory nfs ctx path = runEitherT $ do
-  ret <- liftIO $ syncOpenDir nfs ctx path
-  dir <- case ret of
-    Left s -> left s
-    Right d -> return d
-  dents <- liftIO $ readdir dir []
-  liftIO $ Nfs.closeDir dir
-  right dents
-    where
-      readdir :: Nfs.Dir -> [Nfs.Dirent] -> IO [Nfs.Dirent]
-      readdir dir' dirents = do
-        mdirent <- Nfs.readDir dir'
-        case mdirent of
-          Just dirent -> readdir dir' $ dirent : dirents
-          Nothing -> return dirents
-
-test_list_empty_directory :: Nfs.ServerAddress ->
-                             Nfs.ExportName ->
-                             SyncNfs ->
-                             TestTree
-test_list_empty_directory srv xprt nfs =
-  HU.testCase "List contents of empty directory" assertion
-    where
-      assertion = with_directory' nfs srv xprt "/" $ \ctx path -> do
-        ret <- list_directory nfs ctx path
-        case ret of
-          Left s -> HU.assertFailure $ "failed to read dir " ++ path ++ ": " ++ s
-          Right dents -> do
-            HU.assertEqual "empty dir must yield 2 dirents" 2 $ length dents
-            HU.assertBool "dirents must be '.' and '..'" $ null $
-              filter (not.is_dot_dir) dents
-
-      is_dot_dir dent = (Nfs.direntName dent == "." ||
-                         Nfs.direntName dent == "..") &&
-                        Nfs.direntFType3 dent == Nfs.NF3Dir
-
-test_create_and_remove_directory :: Nfs.ServerAddress ->
-                                    Nfs.ExportName ->
-                                    SyncNfs ->
-                                    TestTree
-test_create_and_remove_directory srv xprt nfs =
-  let assertion = with_directory' nfs srv xprt "/" $ \ctx path -> do
-        ret <- syncStat nfs ctx path
-        case ret of
-          Left s -> HU.assertFailure $ "failed to stat " ++ path ++ ": " ++ s
-          Right stat -> HU.assertBool "stat should indicate it's a directory" $
-                        Nfs.isDirectory stat
-  in
-   HU.testCase "Create and remove directory" assertion
-
-test_create_and_remove_file srv xprt nfs =
-  let assertion = with_file' nfs srv xprt $ \ctx _ fpath -> do
-          ret <- syncStat nfs ctx fpath
-          case ret of
-            Left s -> HU.assertFailure $ "failed to stat " ++ fpath ++ ": " ++ s
-            Right st -> do
-              HU.assertBool "stat should indicate it's a file" $
-                Nfs.isRegularFile st
-              HU.assertEqual "file size should be 0" 0 $ Nfs.statSize st
-  in
-   HU.testCase "Create and remove file" assertion
-
-with_fh :: SyncNfs ->
-           Nfs.Context ->
-           FilePath ->
-           OpenMode ->
-           (Nfs.Fh -> IO ()) ->
-           IO ()
-with_fh nfs ctx path mode action = bracket open Nfs.closeFh action
+list_directory :: FilePath -> ReaderT TestContext IO (Either String [Nfs.Dirent])
+list_directory path = do
+  tctx <- ask
+  let ctx = ctxContext tctx
+      nfs = ctxSyncNfs tctx
+  runEitherT $ do
+    ret <- liftIO $ syncOpenDir nfs ctx path
+    dir <- case ret of
+      Left s -> left s
+      Right d -> return d
+    dents <- liftIO $ readdir dir []
+    liftIO $ Nfs.closeDir dir
+    right dents
   where
-    open :: IO Nfs.Fh
+    readdir :: Nfs.Dir -> [Nfs.Dirent] -> IO [Nfs.Dirent]
+    readdir dir' dirents = do
+      mdirent <- Nfs.readDir dir'
+      case mdirent of
+        Just dirent -> readdir dir' $ dirent : dirents
+        Nothing -> return dirents
+
+test_list_empty_directory :: ReaderT TestContext IO ()
+test_list_empty_directory = with_directory' "/" $ \path -> do
+  ret <- list_directory path
+  case ret of
+    Left s -> liftIO $ HU.assertFailure $
+              "failed to read dir " ++ path ++ ": " ++ s
+    Right dents -> do
+      liftIO $ HU.assertEqual "empty dir must yield 2 dirents" 2 $ length dents
+      liftIO $ HU.assertBool "dirents must be '.' and '..'" $ null $ filter (not.is_dot_dir) dents
+  where
+    is_dot_dir dent = (Nfs.direntName dent == "." ||
+                       Nfs.direntName dent == "..") &&
+                      Nfs.direntFType3 dent == Nfs.NF3Dir
+
+test_create_and_remove_directory :: ReaderT TestContext IO ()
+test_create_and_remove_directory = with_directory' "/" $ \path -> do
+  tctx <- ask
+  let nfs = ctxSyncNfs tctx
+      ctx = ctxContext tctx
+  ret <- liftIO $ syncStat nfs ctx path
+  case ret of
+    Left s -> liftIO $ HU.assertFailure $ "failed to stat " ++ path ++ ": " ++ s
+    Right stat -> liftIO $
+                  HU.assertBool "stat should indicate it's a directory" $
+                  Nfs.isDirectory stat
+
+test_create_and_remove_file :: ReaderT TestContext IO ()
+test_create_and_remove_file = with_file' $ \_ fpath -> do
+  tctx <- ask
+  let nfs = ctxSyncNfs tctx
+      ctx = ctxContext tctx
+  ret <- liftIO $ syncStat nfs ctx fpath
+  case ret of
+    Left s -> liftIO $ HU.assertFailure $
+              "failed to stat " ++ fpath ++ ": " ++ s
+    Right st -> do
+      liftIO $ HU.assertBool "stat should indicate it's a file" $
+        Nfs.isRegularFile st
+      liftIO $ HU.assertEqual "file size should be 0" 0 $ Nfs.statSize st
+
+with_fh :: FilePath ->
+           OpenMode ->
+           (Nfs.Fh -> ReaderT TestContext IO ()) ->
+           ReaderT TestContext IO ()
+with_fh path mode action = LE.bracket open close action
+  where
     open = do
-      ret <- syncOpen nfs ctx path mode
+      tctx <- ask
+      let nfs = ctxSyncNfs tctx
+          ctx = ctxContext tctx
+      ret <- liftIO $ syncOpen nfs ctx path mode
       case ret of
         Left s -> fail $ "failed to open " ++ path ++ ": " ++ s
         Right fh -> return fh
+    close = liftIO.Nfs.closeFh
 
-check_pos :: SyncNfs -> Nfs.Context -> Nfs.Fh -> FileOffset -> String -> IO ()
-check_pos nfs ctx fh exp desc = do
-  sret <- syncLSeek nfs ctx fh 0 RelativeSeek
+check_pos :: Nfs.Fh -> FileOffset -> String -> ReaderT TestContext IO ()
+check_pos fh expected desc = do
+  tctx <- ask
+  let nfs = ctxSyncNfs tctx
+      ctx = ctxContext tctx
+  sret <- liftIO $ syncLSeek nfs ctx fh 0 RelativeSeek
   case sret of
-    Left s -> HU.assertFailure $ desc ++ ": failed to lseek to relative pos 0: " ++ s
-    Right pos -> HU.assertEqual (desc ++ ": expected file position " ++ show exp)
-                 exp pos
+    Left s -> liftIO $ HU.assertFailure $
+              desc ++ ": failed to lseek to relative pos 0: " ++ s
+    Right pos -> liftIO $ HU.assertEqual
+                 (desc ++ ": expected file position " ++ show expected)
+                 expected pos
 
-test_write_and_read_file :: Nfs.ServerAddress ->
-                            Nfs.ExportName ->
-                            SyncNfs ->
-                            TestTree
-test_write_and_read_file srv xprt nfs =
+test_write_and_read_file :: ReaderT TestContext IO ()
+test_write_and_read_file =
   let pattern = BSC8.pack "of no particular importance"
-      assertion = with_file' nfs srv xprt $ \ctx _ fpath -> do
-        with_fh nfs ctx fpath WriteOnly $ \fh -> do
-          check_pos nfs ctx fh 0 "before write"
-          check_write nfs ctx fh pattern
-        with_fh nfs ctx fpath ReadOnly $ \fh -> do
-          check_pos nfs ctx fh 0 "before read"
-          check_read nfs ctx fh pattern
-  in
-   HU.testCase "Write to and read from file" assertion
+  in with_file' $ \_ fpath -> do
+    with_fh fpath WriteOnly $ \fh -> do
+      check_pos fh 0 "before write"
+      check_write fh pattern
+    with_fh fpath ReadOnly $ \fh -> do
+      check_pos fh 0 "before read"
+      check_read fh pattern
 
-test_truncate_and_stat :: Nfs.ServerAddress ->
-                          Nfs.ExportName ->
-                          SyncNfs ->
-                          TestTree
-test_truncate_and_stat srv xprt nfs =
+test_truncate_and_stat :: ReaderT TestContext IO ()
+test_truncate_and_stat =
   let tsize = 12345
-      assertion' ctx fpath = do
+      assertion nfs ctx fpath = do
         ret <- liftIO $ syncTruncate nfs ctx fpath $ fromIntegral tsize
         case ret of
           Left s -> left $ "truncate failed: " ++ s
@@ -374,21 +364,19 @@ test_truncate_and_stat srv xprt nfs =
         liftIO $ HU.assertEqual "file size should match truncated size"
           tsize $ Nfs.statSize st
         right ()
-      assertion = with_file' nfs srv xprt $ \ctx _ fpath -> do
-        res <- runEitherT $ assertion' ctx fpath
-        case res of
-          Left s -> HU.assertFailure s
-          Right () -> return ()
-  in
-   HU.testCase "Truncate and stat file" assertion
+  in with_file' $ \_ fpath -> do
+      tctx <- ask
+      let nfs = ctxSyncNfs tctx
+          ctx = ctxContext tctx
+      res <- runEitherT $ assertion nfs ctx fpath
+      case res of
+        Left s -> liftIO $ HU.assertFailure s
+        Right () -> return ()
 
-test_ftruncate_and_fstat :: Nfs.ServerAddress ->
-                            Nfs.ExportName ->
-                            SyncNfs ->
-                            TestTree
-test_ftruncate_and_fstat srv xprt nfs =
+test_ftruncate_and_fstat :: ReaderT TestContext IO ()
+test_ftruncate_and_fstat =
   let tsize = 67890
-      assertion' ctx fh = do
+      assertion nfs ctx fh = do
         ret <- liftIO $ syncFTruncate nfs ctx fh $ fromIntegral tsize
         case ret of
           Left s -> left $ "ftruncate failed: " ++ s
@@ -402,27 +390,25 @@ test_ftruncate_and_fstat srv xprt nfs =
         liftIO $ HU.assertEqual "file size should match truncated size"
           tsize $ Nfs.statSize st
         right ()
-      assertion = with_file' nfs srv xprt $ \ctx _ fpath ->
-        with_fh nfs ctx fpath WriteOnly $ \fh -> do
-          res <- runEitherT $ assertion' ctx fh
-          case res of
-            Left s -> HU.assertFailure s
-            Right () -> return ()
-  in
-   HU.testCase "Ftruncate and fstat file" assertion
+  in with_file' $ \ _ fpath ->
+    with_fh fpath WriteOnly $ \fh -> do
+      tctx <- ask
+      let nfs = ctxSyncNfs tctx
+          ctx = ctxContext tctx
+      res <- runEitherT $ assertion nfs ctx fh
+      case res of
+        Left s -> liftIO $ HU.assertFailure s
+        Right () -> return ()
 
-test_ftruncate_and_lseek :: Nfs.ServerAddress ->
-                            Nfs.ExportName ->
-                            SyncNfs ->
-                            TestTree
-test_ftruncate_and_lseek srv xprt nfs =
+test_ftruncate_and_lseek :: ReaderT TestContext IO ()
+test_ftruncate_and_lseek =
   let tsize = 13579
-      assertion' ctx fh = do
+      assertion nfs ctx fh = do
         ret <- liftIO $ syncFTruncate nfs ctx fh $ fromIntegral tsize
         case ret of
           Left s -> left $ "ftruncate failed: " ++ s
           Right _ -> right ()
-        liftIO $ check_pos nfs ctx fh 0 "figure out file pos"
+        lift $ check_pos fh 0 "figure out file pos"
         sret <- liftIO $ syncLSeek nfs ctx fh 0 SeekFromEnd
         case sret of
           Left s -> left $ "seek 0 from end failed: " ++ s
@@ -446,285 +432,257 @@ test_ftruncate_and_lseek srv xprt nfs =
         case sret of
           Left s -> right ()
           Right pos -> left $ "could seek to -(tsize + 1) from end to pos " ++ show pos
-      assertion = with_file' nfs srv xprt $ \ctx _ fpath ->
-          with_fh nfs ctx fpath WriteOnly $ \fh -> do
-            res <- runEitherT $ assertion' ctx fh
-            case res of
-              Left s -> HU.assertFailure s
-              Right () -> return ()
-  in
-   HU.testCase "Ftruncate and lseek in file" assertion
+  in with_file' $ \_ fpath ->
+    with_fh fpath WriteOnly $ \fh -> do
+      tctx <- ask
+      let nfs = ctxSyncNfs tctx
+          ctx = ctxContext tctx
+      res <- runEitherT $ assertion nfs ctx fh
+      case res of
+        Left s -> liftIO $ HU.assertFailure s
+        Right () -> return ()
 
-check_pread :: SyncNfs ->
-               Nfs.Context ->
-               Nfs.Fh ->
+check_pread :: Nfs.Fh ->
                FileOffset ->
                BS.ByteString ->
-               IO ()
-check_pread nfs ctx fh off pattern = do
-  pos <- Nfs.getCurrentOffset fh
-  rret <- syncPRead nfs ctx fh (fromIntegral $ BS.length pattern) (fromIntegral off)
+               ReaderT TestContext IO ()
+check_pread fh off pattern = do
+  tctx <- ask
+  let nfs = ctxSyncNfs tctx
+      ctx = ctxContext tctx
+  pos <- liftIO $ Nfs.getCurrentOffset fh
+  rret <- liftIO $ syncPRead nfs ctx fh (fromIntegral $ BS.length pattern) (fromIntegral off)
   case rret of
-    Left s -> HU.assertFailure $ "pread failed: " ++ s
-    Right bs -> HU.assertEqual "read data should match expectation" pattern bs
-  pos' <- Nfs.getCurrentOffset fh
-  HU.assertEqual "file position must not have changed" pos pos'
+    Left s -> liftIO $ HU.assertFailure $ "pread failed: " ++ s
+    Right bs -> liftIO $ HU.assertEqual "read data should match expectation" pattern bs
+  pos' <- liftIO $ Nfs.getCurrentOffset fh
+  liftIO $ HU.assertEqual "file position must not have changed" pos pos'
 
-check_read :: SyncNfs ->
-              Nfs.Context ->
-              Nfs.Fh ->
+check_read :: Nfs.Fh ->
               BS.ByteString ->
-              IO ()
-check_read nfs ctx fh pattern = do
-  let size = (fromIntegral $ BS.length pattern)
-  pos <- Nfs.getCurrentOffset fh
-  rret <- syncRead nfs ctx fh size
+              ReaderT TestContext IO ()
+check_read fh pattern = do
+  tctx <- ask
+  let nfs = ctxSyncNfs tctx
+      ctx = ctxContext tctx
+      size = (fromIntegral $ BS.length pattern)
+  pos <- liftIO $ Nfs.getCurrentOffset fh
+  rret <- liftIO $ syncRead nfs ctx fh size
   case rret of
-    Left s -> HU.assertFailure $ "read failed: " ++ s
-    Right bs -> HU.assertEqual "read data should match expectation" pattern bs
-  pos' <- Nfs.getCurrentOffset fh
-  HU.assertEqual "file position must have changed" (pos + fromIntegral size) pos'
+    Left s -> liftIO $ HU.assertFailure $ "read failed: " ++ s
+    Right bs -> liftIO $
+                HU.assertEqual "read data should match expectation" pattern bs
+  pos' <- liftIO $ Nfs.getCurrentOffset fh
+  liftIO $ HU.assertEqual
+    "file position must have changed"
+    (pos + fromIntegral size) pos'
 
-check_pwrite :: SyncNfs ->
-                Nfs.Context ->
-                Nfs.Fh ->
+check_pwrite :: Nfs.Fh ->
                 FileOffset ->
                 BS.ByteString ->
-                IO ()
-check_pwrite nfs ctx fh off pattern = do
-  pos <- Nfs.getCurrentOffset fh
-  wret <- syncPWrite nfs ctx fh pattern (fromIntegral off)
+                ReaderT TestContext IO ()
+check_pwrite fh off pattern = do
+  tctx <- ask
+  let nfs = ctxSyncNfs tctx
+      ctx = ctxContext tctx
+  pos <- liftIO $ Nfs.getCurrentOffset fh
+  wret <- liftIO $ syncPWrite nfs ctx fh pattern (fromIntegral off)
   case wret of
-    Left s -> HU.assertFailure $ "pwrite failed: " ++ s
-    Right size -> HU.assertEqual
+    Left s -> liftIO $ HU.assertFailure $ "pwrite failed: " ++ s
+    Right size -> liftIO $ HU.assertEqual
                   "write size should match expectation"
                   (BS.length pattern) (fromIntegral size)
-  pos' <- Nfs.getCurrentOffset fh
-  HU.assertEqual "file position must not have changed" pos pos'
+  pos' <- liftIO $ Nfs.getCurrentOffset fh
+  liftIO $ HU.assertEqual "file position must not have changed" pos pos'
 
-check_write :: SyncNfs ->
-               Nfs.Context ->
-               Nfs.Fh ->
+check_write :: Nfs.Fh ->
                BS.ByteString ->
-               IO ()
-check_write nfs ctx fh pattern = do
-  let size = (fromIntegral $ BS.length pattern)
-  pos <- Nfs.getCurrentOffset fh
-  wret <- syncWrite nfs ctx fh pattern
+               ReaderT TestContext IO ()
+check_write fh pattern = do
+  tctx <- ask
+  let nfs = ctxSyncNfs tctx
+      ctx = ctxContext tctx
+      size = (fromIntegral $ BS.length pattern)
+  pos <- liftIO $ Nfs.getCurrentOffset fh
+  wret <- liftIO $ syncWrite nfs ctx fh pattern
   case wret of
-    Left s -> HU.assertFailure $ "write failed: " ++ s
-    Right size' -> HU.assertEqual
+    Left s -> liftIO $ HU.assertFailure $ "write failed: " ++ s
+    Right size' -> liftIO $ HU.assertEqual
                   "write size should match expectation"
                   size size'
-  pos' <- Nfs.getCurrentOffset fh
-  HU.assertEqual "file position must have changed" (pos + fromIntegral size) pos'
+  pos' <- liftIO $ Nfs.getCurrentOffset fh
+  liftIO $ HU.assertEqual
+    "file position must have changed"
+    (pos + fromIntegral size) pos'
 
-test_ftruncate_pwrite_and_pread_file :: Nfs.ServerAddress ->
-                                        Nfs.ExportName ->
-                                        SyncNfs ->
-                                        TestTree
-test_ftruncate_pwrite_and_pread_file srv xprt nfs =
+test_ftruncate_pwrite_and_pread_file :: ReaderT TestContext IO ()
+test_ftruncate_pwrite_and_pread_file =
   let pattern = BSC8.pack "not of any importance either"
       offset = 42
       tsize = offset + (BS.length pattern)
-      assertion' ctx fh = do
+      assertion nfs ctx fh = do
         ret <- liftIO $ syncFTruncate nfs ctx fh $ fromIntegral tsize
         case ret of
           Left s -> left $ "ftruncate failed: " ++ s
           Right _ -> right ()
-        liftIO $ check_pwrite nfs ctx fh (fromIntegral offset) pattern
-        liftIO $ check_pread nfs ctx fh (fromIntegral offset) pattern
+        lift $ check_pwrite fh (fromIntegral offset) pattern
+        lift $ check_pread fh (fromIntegral offset) pattern
         right ()
-      assertion = with_file' nfs srv xprt $ \ctx _ fpath ->
-          with_fh nfs ctx fpath ReadWrite $ \fh -> do
-            res <- runEitherT $ assertion' ctx fh
-            case res of
-              Left s -> HU.assertFailure s
-              Right _ -> return ()
-  in
-   HU.testCase "FTruncate, pwrite to and pread from file" assertion
+  in with_file' $ \_ fpath ->
+    with_fh fpath ReadWrite $ \fh -> do
+      tctx <- ask
+      let nfs = ctxSyncNfs tctx
+          ctx = ctxContext tctx
+      res <- runEitherT $ assertion nfs ctx fh
+      case res of
+        Left s -> liftIO $ HU.assertFailure s
+        Right _ -> return ()
 
-test_mount_wrong_server :: Nfs.ServerAddress -> Nfs.ExportName -> SyncNfs -> TestTree
-test_mount_wrong_server _ _ nfs =
-  let assertion = with_context $ \ctx -> do
-        uuid <- return.toString =<< nextRandom
-        ret <- mount nfs ctx uuid uuid
-        case ret of
-          Left _ -> return ()
-          Right _ -> HU.assertFailure $ "mounting " ++ uuid ++ ":" ++ uuid ++
-                     " succeeded unexpectedly"
-  in
-   HU.testCase "Mount wrong server" assertion
+test_mount_wrong_server :: ReaderT TestContext IO ()
+test_mount_wrong_server = do
+  tctx <- ask
+  let ctx = ctxContext tctx
+      nfs = ctxSyncNfs tctx
+  uuid <- return.toString =<< liftIO nextRandom
+  ret <- local (\_ -> TestContext nfs ctx uuid uuid) mount
+  case ret of
+    Left _ -> return ()
+    Right _ -> liftIO $ HU.assertFailure $
+               "mounting " ++ uuid ++ ":" ++ uuid ++ " succeeded unexpectedly"
 
-test_mount_wrong_export :: Nfs.ServerAddress -> Nfs.ExportName -> SyncNfs -> TestTree
-test_mount_wrong_export srv _ nfs =
-  let assertion = with_context $ \ctx -> do
-        uuid <- return.toString =<< nextRandom
-        ret <- mount nfs ctx srv uuid
-        case ret of
-          Left _ -> return ()
-          Right _ -> HU.assertFailure $ "mounting " ++ srv ++ ":" ++ uuid ++
-                     " succeeded unexpectedly"
-  in
-   HU.testCase "Mount wrong export" assertion
+test_mount_wrong_export :: ReaderT TestContext IO ()
+test_mount_wrong_export = do
+  tctx <- ask
+  let ctx = ctxContext tctx
+      srv = ctxServer tctx
+      nfs = ctxSyncNfs tctx
+  uuid <- return.toString =<< liftIO nextRandom
+  ret <- local (\_ -> TestContext nfs ctx srv uuid) mount
+  case ret of
+    Left _ -> return ()
+    Right _ -> liftIO $ HU.assertFailure $
+               "mounting " ++ srv ++ ":" ++ uuid ++ " succeeded unexpectedly"
 
-test_mount_ok :: Nfs.ServerAddress -> Nfs.ExportName -> SyncNfs -> TestTree
-test_mount_ok srv xprt nfs =
-  let assertion = with_context $ \ctx -> do
-        ret <- mount nfs ctx srv xprt
-        case ret of
-          Left s -> HU.assertFailure $ "mounting " ++ srv ++ ":" ++ xprt ++
-                    " failed: " ++ s
-          Right _ -> return ()
-  in
-   HU.testCase "Mount correct server and export" assertion
+test_mount_ok :: ReaderT TestContext IO ()
+test_mount_ok = do
+  tctx <- ask
+  ret <- mount
+  case ret of
+    Left s -> liftIO $ HU.assertFailure $
+              "mounting " ++ ctxServer tctx ++ ":" ++ ctxExport tctx ++
+              " failed: " ++ s
+    Right _ -> return ()
 
-test_init_and_destroy_context :: TestTree
-test_init_and_destroy_context =
-  let assertion = with_context $ \ctx -> do
-        err <- Nfs.getError ctx
-        HU.assertEqual "initContext failed" Nothing err
-  in
-   HU.testCase "Init and destroy context" assertion
+test_init_and_destroy_context :: IO ()
+test_init_and_destroy_context = with_context $ \ctx -> do
+  err <- Nfs.getError ctx
+  HU.assertEqual "initContext failed" Nothing err
 
-test_garbage_collect_context :: TestTree
-test_garbage_collect_context =
-  let
-    assertion = Nfs.initContext >> return ()
-  in
-   HU.testCase "Garbage collect context" assertion
+-- Does not really verify yet that the context is garbage collected.
+test_garbage_collect_context :: IO ()
+test_garbage_collect_context = Nfs.initContext >> return ()
 
-test_destroy_context_twice :: TestTree
-test_destroy_context_twice =
-  let assertion = do
-        ctx <- Nfs.initContext
-        Nfs.destroyContext ctx
-        Nfs.destroyContext ctx
-  in
-   HU.testCase "Destroy context twice in a row" assertion
+test_destroy_context_twice :: IO ()
+test_destroy_context_twice = do
+  ctx <- Nfs.initContext
+  Nfs.destroyContext ctx
+  Nfs.destroyContext ctx
 
-test_get_fd :: TestTree
-test_get_fd =
-  let assertion = with_context $ \ctx -> do
-        fd <- Nfs.getFd ctx
-        HU.assertBool "got an fd without mounting" (fd < 0)
-  in
-   HU.testCase "Get fd from context" assertion
+test_get_fd :: IO ()
+test_get_fd = with_context $ \ctx -> do
+  fd <- Nfs.getFd ctx
+  HU.assertBool "got an fd without mounting" (fd < 0)
 
-test_get_fd_mounted :: Nfs.ServerAddress -> Nfs.ExportName -> SyncNfs -> TestTree
-test_get_fd_mounted srv xprt nfs =
-  let assertion = with_mount nfs srv xprt $ \ctx -> do
-        fd <- Nfs.getFd ctx
-        HU.assertBool "didn't get an FD back" $ fd >= 0
-  in
-   HU.testCase "Get fd from mounted context" assertion
+test_get_fd_mounted :: ReaderT TestContext IO ()
+test_get_fd_mounted = with_mount $ do
+  tctx <- ask
+  let ctx = ctxContext tctx
+  fd <- liftIO $ Nfs.getFd ctx
+  liftIO $ HU.assertBool "didn't get an FD back" $ fd >= 0
 
-test_queue_length :: TestTree
-test_queue_length =
-  let assertion = with_context $ \ctx -> do
-        l <- Nfs.queueLength ctx
-        HU.assertEqual "unexpected queue length" 0 l
-  in
-   HU.testCase "Get queue length from context" assertion
+test_queue_length :: IO ()
+test_queue_length = with_context $ \ctx -> do
+  l <- Nfs.queueLength ctx
+  HU.assertEqual "unexpected queue length" 0 l
 
-test_get_read_max :: TestTree
-test_get_read_max =
-  let assertion = with_context $ \ctx -> do
-        l <- Nfs.getReadMax ctx
-        HU.assertEqual "unexpected read max" 0 l
-  in
-   HU.testCase "Get read max from context" assertion
+test_get_read_max :: IO ()
+test_get_read_max = with_context $ \ctx -> do
+  l <- Nfs.getReadMax ctx
+  HU.assertEqual "unexpected read max" 0 l
 
-test_get_write_max :: TestTree
-test_get_write_max =
-  let assertion = with_context $ \ctx -> do
-        l <- Nfs.getWriteMax ctx
-        HU.assertEqual "unexpected write max" 0 l
-  in
-   HU.testCase "Get write max from context" assertion
+test_get_write_max :: IO ()
+test_get_write_max = with_context $ \ctx -> do
+  l <- Nfs.getWriteMax ctx
+  HU.assertEqual "unexpected write max" 0 l
 
-test_directory_source :: Nfs.ServerAddress -> Nfs.ExportName -> SyncNfs -> TestTree
-test_directory_source addr xprt nfs =
-  let assertion = with_directory' nfs addr xprt "/" $ \ctx parent ->
-        with_directory' nfs addr xprt parent $ \ctx child_dir ->
-          with_file nfs ctx parent $ \child_file -> do
-            l <- runResourceT $ NfsC.sourceDirectory ctx parent $$ ListC.consume
-            HU.assertEqual "unexpected directory contents" 2 $ length l
-            HU.assertBool "child file must be present in output" $
-              any (\e -> e == parent </> child_file) l
-            HU.assertBool "child dir must be present in output" $
-              any (\e -> e == parent </> child_dir) l
-  in
-   HU.testCase "SourceDirectory conduit" assertion
+test_directory_source :: ReaderT TestContext IO ()
+test_directory_source =
+  with_directory' "/" $ \parent ->
+    with_directory parent $ \child_dir ->
+      with_file parent $ \child_file -> do
+        tctx <- ask
+        let ctx = ctxContext tctx
+        l <- runResourceT $ NfsC.sourceDirectory ctx parent $$ ListC.consume
+        liftIO $ HU.assertEqual "unexpected directory contents" 2 $ length l
+        liftIO $ HU.assertBool "child file must be present in output" $
+          any (\e -> e == parent </> child_file) l
+        liftIO $ HU.assertBool "child dir must be present in output" $
+          any (\e -> e == parent </> child_dir) l
 
-test_fh_source_and_sink :: Nfs.ServerAddress ->
-                           Nfs.ExportName ->
-                           SyncNfs ->
-                           TestTree
-test_fh_source_and_sink addr xprt nfs =
+test_fh_source_and_sink :: ReaderT TestContext IO ()
+test_fh_source_and_sink =
   let pattern = BSC8.pack "some arbitrary, utterly unremarkable text"
-      assertion = with_file' nfs addr xprt $ \ctx dir source ->
-        with_fh nfs ctx source ReadWrite $ \fh -> do
-          check_pwrite nfs ctx fh 0 pattern
-          with_file nfs ctx dir $ \sink ->
-            with_fh nfs ctx sink ReadWrite $ \fh2 -> do
-              runResourceT $ NfsC.sourceFh fh $$ NfsC.sinkFh fh2
-              check_pread nfs ctx fh2 0 pattern
-  in
-   HU.testCase "Conduit source and sink - Fh" assertion
+  in with_file' $ \dir source ->
+    with_fh source ReadWrite $ \fh -> do
+      check_pwrite fh 0 pattern
+      with_file dir $ \sink ->
+        with_fh sink ReadWrite $ \fh2 -> do
+          runResourceT $ NfsC.sourceFh fh $$ NfsC.sinkFh fh2
+          check_pread fh2 0 pattern
 
-test_file_path_source_and_sink :: Nfs.ServerAddress ->
-                                  Nfs.ExportName ->
-                                  SyncNfs ->
-                                  TestTree
-test_file_path_source_and_sink addr xprt nfs =
+test_file_path_source_and_sink :: ReaderT TestContext IO ()
+test_file_path_source_and_sink =
   let pattern = BSC8.pack "some dull string"
-      assertion = with_file' nfs addr xprt $ \ctx dir source ->
-        with_fh nfs ctx source ReadWrite $ \fh -> do
-          check_pwrite nfs ctx fh 0 pattern
-          with_file nfs ctx dir $ \sink -> do
-            runResourceT $ NfsC.sourceFile ctx source $$ NfsC.sinkFile ctx sink
-            with_fh nfs ctx sink ReadWrite $ \fh2 ->
-              check_pread nfs ctx fh2 0 pattern
-  in
-   HU.testCase "Conduit source and sink - FilePath" assertion
+  in with_file' $ \dir source ->
+    with_fh source ReadWrite $ \fh -> do
+      check_pwrite fh 0 pattern
+      with_file dir $ \sink -> do
+        tctx <- ask
+        let ctx = ctxContext tctx
+        runResourceT $ NfsC.sourceFile ctx source $$ NfsC.sinkFile ctx sink
+        with_fh sink ReadWrite $ \fh2 ->
+          check_pread fh2 0 pattern
 
-test_file_path_range_source_and_sink :: Nfs.ServerAddress ->
-                                        Nfs.ExportName ->
-                                        SyncNfs ->
-                                        TestTree
-test_file_path_range_source_and_sink addr xprt nfs =
+test_file_path_range_source_and_sink :: ReaderT TestContext IO ()
+test_file_path_range_source_and_sink =
   let pattern1 = BSC8.pack "some"
       size1 = BS.length pattern1
       pattern2 = BSC8.pack "pointless"
       size2 = BS.length pattern2
       pattern3 = BSC8.pack "text"
       size3 = BS.length pattern3
-      assertion = with_file' nfs addr xprt $ \ctx dir source ->
-        with_fh nfs ctx source ReadWrite $ \fh -> do
-          check_write nfs ctx fh pattern1
-          check_write nfs ctx fh pattern2
-          check_write nfs ctx fh pattern3
-          with_file nfs ctx dir $ \sink1 ->
-            with_file nfs ctx dir $ \sink2 ->
-              with_file nfs ctx dir $ \sink3 -> do
-                runResourceT $
-                  NfsC.sourceFileRange ctx source Nothing (Just $ fromIntegral size1) $$
-                  NfsC.sinkFile ctx sink1
-                runResourceT $
-                  NfsC.sourceFileRange ctx source (Just $ fromIntegral size1) (Just $ fromIntegral size2) $$
-                  NfsC.sinkFile ctx sink2
-                runResourceT $
-                  NfsC.sourceFileRange ctx source (Just $ fromIntegral (size1 + size2)) Nothing $$
-                  NfsC.sinkFile ctx sink3
-                with_fh nfs ctx sink1 ReadOnly $ \fh' ->
-                  check_read nfs ctx fh' pattern1
-                with_fh nfs ctx sink2 ReadOnly $ \fh' ->
-                  check_read nfs ctx fh' pattern2
-                with_fh nfs ctx sink3 ReadOnly $ \fh' ->
-                  check_read nfs ctx fh' pattern3
-  in
-   HU.testCase "Conduit source and sink - FilePath" assertion
+  in with_file' $ \dir source ->
+    with_fh source ReadWrite $ \fh -> do
+      check_write fh pattern1
+      check_write fh pattern2
+      check_write fh pattern3
+      with_file dir $ \sink1 ->
+        with_file dir $ \sink2 ->
+          with_file dir $ \sink3 -> do
+            tctx <- ask
+            let ctx = ctxContext tctx
+            runResourceT $
+              NfsC.sourceFileRange ctx source Nothing (Just $ fromIntegral size1) $$
+              NfsC.sinkFile ctx sink1
+            runResourceT $
+              NfsC.sourceFileRange ctx source (Just $ fromIntegral size1)
+              (Just $ fromIntegral size2) $$ NfsC.sinkFile ctx sink2
+            runResourceT $
+              NfsC.sourceFileRange ctx source (Just $ fromIntegral (size1 + size2))
+              Nothing $$ NfsC.sinkFile ctx sink3
+            with_fh sink1 ReadOnly $ \fh' -> check_read fh' pattern1
+            with_fh sink2 ReadOnly $ \fh' -> check_read fh' pattern2
+            with_fh sink3 ReadOnly $ \fh' -> check_read fh' pattern3
 
 sync_nfs :: SyncNfs
 sync_nfs = SyncNfs { syncMount = Nfs.mount
@@ -778,45 +736,62 @@ async_nfs = SyncNfs { syncMount = \ctx addr xprt ->
                     , syncLSeek = \ctx fh off mode ->
                        sync_wrap ctx $ Nfs.lseekAsync fh off mode }
 
-basic_tests :: TestTree
-basic_tests = testGroup "Basic tests" [ test_init_and_destroy_context
-                                      , test_destroy_context_twice
-                                      , test_get_fd
-                                      , test_queue_length
-                                      , test_get_read_max
-                                      , test_get_write_max ]
+mk_test :: Nfs.ServerAddress ->
+           Nfs.ExportName ->
+           SyncNfs ->
+           (ReaderT TestContext IO (), String) ->
+           TestTree
+mk_test addr xprt nfs (assertion, desc) =
+  HU.testCase desc (with_context $ \ctx ->
+                     runReaderT assertion $ TestContext nfs ctx addr xprt)
 
-advanced_tests :: [ (Nfs.ServerAddress -> Nfs.ExportName -> SyncNfs -> TestTree) ]
-advanced_tests = [ test_get_fd_mounted
-                 , test_mount_ok
-                 , test_mount_wrong_export
-                 , test_mount_wrong_server
-                 , test_create_and_remove_directory
-                 , test_list_empty_directory
-                 , test_create_and_remove_file
-                 , test_write_and_read_file
-                 , test_truncate_and_stat
-                 , test_ftruncate_and_fstat
-                 , test_ftruncate_and_lseek
-                 , test_ftruncate_pwrite_and_pread_file ]
+basic_tests :: TestTree
+basic_tests =
+  let tests = [ (test_init_and_destroy_context, "init and destroy context")
+              , (test_destroy_context_twice, "destroy context twice")
+                -- disabled as the test is too weak
+                -- , (test_garbage_collect_context, "garbage collect context")
+              , (test_get_fd, "get fd from context")
+              , (test_queue_length, "get queue length from context")
+              , (test_get_read_max, "get read max from context")
+              , (test_get_write_max, "get write max from context") ]
+  in
+   testGroup "Basic tests" $
+   fmap (\(assertion, desc) -> HU.testCase desc assertion) $ tests
+
+advanced_tests :: [ (ReaderT TestContext IO (), String) ]
+advanced_tests = [ (test_get_fd_mounted, "get fd from context when mounted")
+                 , (test_mount_ok, "mount correct server and export")
+                 , (test_mount_wrong_export, "mount correct server, wrong export")
+                 , (test_mount_wrong_server, "mount wrong server")
+                 , (test_create_and_remove_directory, "create and remove directory")
+                 , (test_list_empty_directory, "list empty directory")
+                 , (test_create_and_remove_file, "create and remove file")
+                 , (test_write_and_read_file, "write and read file")
+                 , (test_truncate_and_stat, "truncate and stat")
+                 , (test_ftruncate_and_fstat, "ftruncate and fstat")
+                 , (test_ftruncate_and_lseek, "ftruncate and lseek")
+                 , (test_ftruncate_pwrite_and_pread_file, "pwrite and pread") ]
 
 sync_tests :: Nfs.ServerAddress -> Nfs.ExportName -> TestTree
 sync_tests srv xprt = testGroup "Synchronous interface tests" $
-             fmap (\test -> test srv xprt sync_nfs) $ advanced_tests
+             fmap (\test -> mk_test srv xprt sync_nfs test) $ advanced_tests
 
 async_tests :: Nfs.ServerAddress -> Nfs.ExportName -> TestTree
 async_tests srv xprt = testGroup "Asynchronous interface tests" $
-              fmap (\test -> test srv xprt async_nfs) $ advanced_tests
+              fmap (\test -> mk_test srv xprt async_nfs test) $ advanced_tests
 
-conduit_tests' :: [ (Nfs.ServerAddress -> Nfs.ExportName -> SyncNfs -> TestTree) ]
-conduit_tests' = [ test_directory_source
-                 , test_fh_source_and_sink
-                 , test_file_path_source_and_sink
-                 , test_file_path_range_source_and_sink ]
+conduit_tests' :: [ (ReaderT TestContext IO (), String) ]
+conduit_tests' = [ (test_directory_source, "conduit directory source")
+                 , (test_fh_source_and_sink, "conduit, fh source and sink")
+                 , (test_file_path_source_and_sink, "conduit file source and sink")
+                 , (test_file_path_range_source_and_sink,
+                    "conduit file range source and sink") ]
 
 conduit_tests :: Nfs.ServerAddress -> Nfs.ExportName -> TestTree
 conduit_tests srv xprt = testGroup "Nfs conduit tests" $
-                         fmap (\test -> test srv xprt sync_nfs) $ conduit_tests'
+                         fmap (\test -> mk_test srv xprt sync_nfs test) $
+                         conduit_tests'
 
 -- TODO: make this fail with a nicer error message if server / export are not
 -- specified

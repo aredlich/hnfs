@@ -42,6 +42,8 @@ executable hnfs-tester
                         either >= 4.1.1,
                         filepath >= 1.3.0.1,
                         hnfs,
+                        lifted-base >= 0.2.2.1,
+                        mtl >= 2.1.2,
                         resourcet >= 1.1.0,
                         statvfs,
                         tagged >= 0.7,
