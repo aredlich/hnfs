@@ -1,4 +1,4 @@
-# hnfs - Haskell bindings to libnfs  https://github.com/aredlich/hnfs
+# hnfs - Haskell bindings for libnfs
 
 ## Overview
 
@@ -55,6 +55,3 @@ LICENSE file.
 
 Feedback is very welcome - feel free to contact me with questions / suggestions
 / bug reports via mail or github's tools (pull requests and issue tracker).
-
-Have fun,
-Arne Redlich <arne.redlich@googlemail.com>
