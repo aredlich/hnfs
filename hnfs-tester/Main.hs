@@ -426,11 +426,11 @@ test_ftruncate_and_lseek =
                        0 $ fromIntegral pos
         sret <- liftIO $ syncLSeek nfs ctx fh (-1) RelativeSeek
         case sret of
-          Left s -> right ()
+          Left _ -> right ()
           Right pos -> left $ "could do a relative seek to pos " ++ show pos
         sret <- liftIO $ syncLSeek nfs ctx fh (-(tsize + 1)) SeekFromEnd
         case sret of
-          Left s -> right ()
+          Left _ -> right ()
           Right pos -> left $ "could seek to -(tsize + 1) from end to pos " ++ show pos
   in with_file' $ \_ fpath ->
     with_fh fpath WriteOnly $ \fh -> do
@@ -660,7 +660,6 @@ test_file_path_range_source_and_sink =
       pattern2 = BSC8.pack "pointless"
       size2 = BS.length pattern2
       pattern3 = BSC8.pack "text"
-      size3 = BS.length pattern3
   in with_file' $ \dir source ->
     with_fh source ReadWrite $ \fh -> do
       check_write fh pattern1
