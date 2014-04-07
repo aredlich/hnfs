@@ -122,7 +122,7 @@ sourceFhRange fh moff msize = do
   where
     read_fh' :: MonadResource m => Nfs.Fh -> Integer -> Producer m BS.ByteString
     read_fh' fh' sz = do
-      ret <- liftIO $ Nfs.read fh (min default_read_chunk_size $ fromIntegral sz)
+      ret <- liftIO $ Nfs.read fh' (min default_read_chunk_size $ fromIntegral sz)
       case ret of
         Left s -> fail s
         Right bs -> unless (BS.null bs) $ do
