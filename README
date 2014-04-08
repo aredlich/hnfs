@@ -1,11 +1,11 @@
-# hnfs - Haskell bindings for libnfs
+# hnfs - Haskell bindings for the libnfs NFS client library
 
 ## Overview
 
 ### Library
 
-Hnfs provides Haskell bindings for the libnfs C library which is developed at
- https://github.com/sahlberg/libnfs .
+Hnfs provides Haskell bindings for the libnfs NFS client library which is
+developed at https://github.com/sahlberg/libnfs .
 These bindings use the c2hs tool and were first and foremost created as an exercise
 in learning Haskell. The interface is not yet considered stable (see TODO), and
 neither is the code - use at your own risk.
@@ -27,9 +27,12 @@ it could lead to data loss.
 
 * Get libnfs from https://github.com/aredlich/libnfs as it
   contains a few modifications which are not pushed upstream yet.
-* Get the haskell libraries listed in hnfs.cabal's build-depends of the library and
-  the test tool. The version numbers listed in hnfs.cabal are based on the system
+* The version numbers listed in hnfs.cabal are based on the system
   hnfs is developed on; older versions might work as well - YMMV.
+* c2hs 0.16.6 from cabal currently does not work and older versions don't
+  support `offsetof' which is needed by Nfs.chs yet.
+  Getting it from https://github.com/haskell/c2hs fixes it (at the time of
+  writing: commit 4ac173844, still identifies itself as 0.16.6).
 
 ## Known Issues
 
