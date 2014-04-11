@@ -22,6 +22,7 @@ import qualified Data.ByteString.Char8 as BSC8
 import Data.Conduit
 import qualified Data.Conduit.List as ListC
 import qualified Data.Conduit.Nfs as NfsC
+import Data.Maybe (fromJust)
 import Data.Monoid
 import Data.Typeable (Typeable)
 import Data.Proxy
@@ -30,10 +31,9 @@ import Data.UUID.V4
 
 import Foreign.C.Types
 
-import qualified GHC.Event as Ev
-
 import System.FilePath.Posix
 import System.IO
+import qualified System.Linux.Epoll as Ep
 import qualified System.Nfs as Nfs
 import System.Posix.IO (OpenMode (..))
 import System.Posix.Types
@@ -42,58 +42,64 @@ import Test.Tasty
 import Test.Tasty.Options
 import Test.Tasty.HUnit as HU
 
-nfs_to_ev_event :: Nfs.Event -> Ev.Event
-nfs_to_ev_event ev
-  | ev == Nfs.eventRead `mappend` Nfs.eventWrite = Ev.evtRead `mappend` Ev.evtWrite
-  | ev == Nfs.eventRead = Ev.evtRead
-  | ev == Nfs.eventWrite = Ev.evtWrite
+-- epoll and poll events are (mostly) the same. However, we don't have any
+-- means to get to the underlying event codes. The below should hopefully get
+-- us far enough.
+nfs_to_ep_event :: Nfs.Event -> Ep.EventType
+nfs_to_ep_event ev
+  | ev == Nfs.eventRead = Ep.inEvent
+  | ev == Nfs.eventWrite = Ep.outEvent
+  | ev == Nfs.eventRead `mappend` Nfs.eventWrite = Ep.combineEvents [ Ep.inEvent
+                                                                    , Ep.outEvent ]
   | otherwise = undefined
 
-ev_to_nfs_event :: Ev.Event -> Nfs.Event
-ev_to_nfs_event ev
-  | ev == Ev.evtRead `mappend` Ev.evtWrite = Nfs.eventRead `mappend` Nfs.eventWrite
-  | ev == Ev.evtRead = Nfs.eventRead
-  | ev == Ev.evtWrite = Nfs.eventWrite
+ep_to_nfs_event :: Ep.EventType -> Nfs.Event
+ep_to_nfs_event ev
+  | ev Ep.=~ Ep.inEvent && ev Ep.=~ Ep.outEvent =
+    Nfs.eventRead `mappend` Nfs.eventWrite
+  | ev Ep.=~ Ep.inEvent = Nfs.eventRead
+  | ev Ep.=~ Ep.outEvent = Nfs.eventWrite
+  | ev Ep.=~ Ep.hangupEvent = Nfs.eventHup
+  | ev Ep.=~ Ep.urgentEvent = Nfs.eventPri
+  | ev Ep.=~ Ep.errorEvent = Nfs.eventErr
   | otherwise = undefined
 
--- Retrieving and registering the context's fd once is *not* sufficient -
--- we need to constantly re-register it as libnfs closes / reopens it e.g.
--- during mount.
-ev_callback :: Nfs.Context -> Ev.EventManager-> Ev.FdKey -> Ev.Event -> IO ()
-ev_callback ctx mgr fdkey ev = do
-  Ev.unregisterFd mgr fdkey
-  Nfs.service ctx $ ev_to_nfs_event ev
-  register_fd ctx mgr
+event_loop :: Nfs.Context -> MVar (Either String a) -> IO (Either String a)
+event_loop ctx mv = do
+  mret <- tryTakeMVar mv
+  case mret of
+    Just ret -> return ret
+    Nothing -> do
+      bracket open Ep.close poll
+      event_loop ctx mv
+  where
+    -- Arbitrarily chosen size.
+    open = Ep.create (fromJust $ Ep.toSize 32)
 
-register_fd :: Nfs.Context -> Ev.EventManager -> IO ()
-register_fd ctx mgr = do
-  fd <- Nfs.getFd ctx
-  evts <- Nfs.whichEvents ctx
-  _ <- Ev.registerFd mgr (ev_callback ctx mgr) fd $ nfs_to_ev_event evts
-  return ()
+    -- The Context's fd can (and does!) change, so we need to get it out each time.
+    poll dev = do
+      fd <- Nfs.getFd ctx
+      evts <- Nfs.whichEvents ctx
+      bracket
+        (Ep.add dev () [ nfs_to_ep_event evts, Ep.oneShotEvent ] fd)
+        Ep.freeDesc
+        $ \_ -> do
+          -- Arbitrarily chosen timeout. epoll_wait allows -1 to wait indefinitely
+          -- but that does not seem to be supported by the haskell bindings.
+          evts' <- Ep.wait (fromJust $ Ep.toDuration 10) dev
+          let etypes = map Ep.eventType evts'
+              etype = Ep.combineEvents etypes
+          Nfs.service ctx $ ep_to_nfs_event etype
 
--- This spews "ioManagerDie: write: Bad file descriptor" -
--- https://ghc.haskell.org/trac/ghc/ticket/5443
 sync_wrap :: Nfs.Context ->
              (Nfs.Callback a -> IO (Either String ())) ->
              IO (Either String a)
 sync_wrap ctx async_action = runEitherT $ do
-  mgr <- liftIO Ev.new
-  mv <- liftIO newEmptyMVar
-  ret <- liftIO $ async_action $ callback mv mgr
+  mv <- liftIO $ newEmptyMVar
+  ret <- liftIO $ async_action $ putMVar mv
   case ret of
     Left s -> left $ "failed to invoke async action: " ++ s
-    Right () -> right ()
-  liftIO $ register_fd ctx mgr
-  liftIO $ Ev.loop mgr
-  (liftIO $ takeMVar mv) >>= hoistEither
-  where
-    callback :: MVar (Either String a) ->
-                Ev.EventManager ->
-                Either String a -> IO ()
-    callback mv' mgr' ret' = do
-      putMVar mv' ret'
-      Ev.shutdown mgr'
+    Right () -> (liftIO $ event_loop ctx mv) >>= hoistEither
 
 data SyncNfs = SyncNfs { syncMount :: Nfs.Context ->
                                       Nfs.ServerAddress ->
