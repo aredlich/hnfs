@@ -47,7 +47,6 @@ it could lead to data loss.
 * Make tests more fine grained
 * More tests
 * Split library up into Nfs.Base, Nfs.Sync and Nfs.Async?
-* Split tester up into Utils, BasicTests, AdvancedTests, ConduitTests and Main
 
 ## License
 

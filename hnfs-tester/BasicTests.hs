@@ -14,6 +14,7 @@ module BasicTests ( tests ) where
 
 import Base
 
+import Control.Monad (void)
 import qualified System.Nfs as Nfs
 
 import Test.Tasty
@@ -26,7 +27,7 @@ test_init_and_destroy_context = withContext $ \ctx -> do
 
 -- Does not really verify yet that the context is garbage collected.
 test_garbage_collect_context :: IO ()
-test_garbage_collect_context = Nfs.initContext >> return ()
+test_garbage_collect_context = void Nfs.initContext
 
 test_destroy_context_twice :: IO ()
 test_destroy_context_twice = do
