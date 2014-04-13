@@ -8,6 +8,8 @@
 
 module Main where
 
+import qualified BasicTests as Basics
+
 import Control.Concurrent.MVar
 import Control.Exception
 import qualified Control.Exception.Lifted as LE
@@ -579,47 +581,12 @@ test_mount_ok = do
               " failed: " ++ s
     Right _ -> return ()
 
-test_init_and_destroy_context :: IO ()
-test_init_and_destroy_context = with_context $ \ctx -> do
-  err <- Nfs.getError ctx
-  HU.assertEqual "initContext failed" Nothing err
-
--- Does not really verify yet that the context is garbage collected.
-test_garbage_collect_context :: IO ()
-test_garbage_collect_context = Nfs.initContext >> return ()
-
-test_destroy_context_twice :: IO ()
-test_destroy_context_twice = do
-  ctx <- Nfs.initContext
-  Nfs.destroyContext ctx
-  Nfs.destroyContext ctx
-
-test_get_fd :: IO ()
-test_get_fd = with_context $ \ctx -> do
-  fd <- Nfs.getFd ctx
-  HU.assertBool "got an fd without mounting" (fd < 0)
-
 test_get_fd_mounted :: ReaderT TestContext IO ()
 test_get_fd_mounted = with_mount $ do
   tctx <- ask
   let ctx = ctxContext tctx
   fd <- liftIO $ Nfs.getFd ctx
   liftIO $ HU.assertBool "didn't get an FD back" $ fd >= 0
-
-test_queue_length :: IO ()
-test_queue_length = with_context $ \ctx -> do
-  l <- Nfs.queueLength ctx
-  HU.assertEqual "unexpected queue length" 0 l
-
-test_get_read_max :: IO ()
-test_get_read_max = with_context $ \ctx -> do
-  l <- Nfs.getReadMax ctx
-  HU.assertEqual "unexpected read max" 0 l
-
-test_get_write_max :: IO ()
-test_get_write_max = with_context $ \ctx -> do
-  l <- Nfs.getWriteMax ctx
-  HU.assertEqual "unexpected write max" 0 l
 
 test_directory_source :: ReaderT TestContext IO ()
 test_directory_source =
@@ -750,20 +717,6 @@ mk_test addr xprt nfs (assertion, desc) =
   HU.testCase desc (with_context $ \ctx ->
                      runReaderT assertion $ TestContext nfs ctx addr xprt)
 
-basic_tests :: TestTree
-basic_tests =
-  let tests = [ (test_init_and_destroy_context, "init and destroy context")
-              , (test_destroy_context_twice, "destroy context twice")
-                -- disabled as the test is too weak
-                -- , (test_garbage_collect_context, "garbage collect context")
-              , (test_get_fd, "get fd from context")
-              , (test_queue_length, "get queue length from context")
-              , (test_get_read_max, "get read max from context")
-              , (test_get_write_max, "get write max from context") ]
-  in
-   testGroup "Basic tests" $
-   fmap (\(assertion, desc) -> HU.testCase desc assertion) $ tests
-
 advanced_tests :: [ (ReaderT TestContext IO (), String) ]
 advanced_tests = [ (test_get_fd_mounted, "get fd from context when mounted")
                  , (test_mount_ok, "mount correct server and export")
@@ -824,7 +777,7 @@ main = let ings = includingOptions [ Option (Proxy :: Proxy ServerAddressOpt)
         defaultMainWithIngredients ings $
         askOption $ \(ServerAddressOpt server) ->
         askOption $ \(ExportNameOpt export) ->
-        testGroup "HNfs tests" $ [ basic_tests
+        testGroup "HNfs tests" $ [ Basics.tests
                                  , sync_tests server export
                                  , async_tests server export
                                  , conduit_tests server export ]
